@@ -2,7 +2,8 @@
 #                 -> PySpark Structured Streaming -> Apache Iceberg (REST catalog + S3 local)
 #
 # Demo end-to-end (un comando):
-#   docker compose up -d --build && docker compose logs -f e2e dbt
+#   docker compose up -d --build && docker compose wait dbt
+#   Veredicto: scripts/resultado.ps1 (PowerShell) o scripts/resultado.sh (bash)
 #   -> e2e: tráfico real por la API .NET + reconciliación SQL Server == Iceberg bronze
 #   -> dbt: silver/gold + tests (bronze == silver == gold); solo corre si e2e pasa
 #

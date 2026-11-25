@@ -1274,10 +1274,13 @@ button:focus-visible { outline: 3px solid var(--oltp); outline-offset: 2px; }
       '<div class="concept"><b>Concepto</b><strong>Reconciliación por event_id</strong>: en lugar de suponer que no falta nada, se compara evento por evento el origen contra el destino.</div>',
     codeLabel: 'README §1 · prueba de caída',
     code:
-      'docker compose stop connect spark-ingest                                # pipeline caído\n' +
-      'curl -X POST "localhost:5080/api/simulate?accounts=20&payments=3000"    # el core sigue operando\n' +
-      'docker compose start connect spark-ingest                               # recuperación automática\n' +
-      'docker compose run --rm e2e                                             # reconciliación: PASS',
+      '# Todo en un comando (deja la evidencia en evidencia/prueba-caida-<fecha>.txt):\n' +
+      'powershell -ExecutionPolicy Bypass -File .\\scripts\\prueba-caida.ps1\n\n' +
+      '# Los mismos pasos a mano:\n' +
+      'docker compose stop connect spark-ingest                                  # pipeline caído\n' +
+      'Invoke-RestMethod -Method Post -Uri "http://localhost:5080/api/simulate?accounts=20&payments=3000"\n' +
+      'docker compose start connect spark-ingest                                 # recuperación automática\n' +
+      'powershell -ExecutionPolicy Bypass -File .\\scripts\\resultado.ps1 -Actualizar   # reconciliación: PASS',
     play: async function (c) {
       var N = {
         sql: c.box({ x: 20, y: 40, w: 170, h: 95, k: 'oltp', title: 'SQL Server', sub: ['outbox + CDC'] }),
@@ -1369,7 +1372,7 @@ button:focus-visible { outline: 3px solid var(--oltp); outline-offset: 2px; }
 
       /* 4. reconcile */
       c.say('Paso 4: reconciliación por event_id entre SQL Server, bronze y silver.');
-      await c.typeText(termT, '$ docker compose run --rm e2e', 25);
+      await c.typeText(termT, '$ bash scripts/resultado.sh --actualizar', 25);
       await c.all([
         c.count(tl[0].v, 0, 5728, 1200),
         c.count(tl[1].v, 0, 5728, 1200),
@@ -1389,13 +1392,14 @@ button:focus-visible { outline: 3px solid var(--oltp); outline-offset: 2px; }
     title: 'Todo con un comando',
     text:
       '<p><code>docker compose up -d --build</code> levanta todos los servicios. El servicio <code>e2e</code> genera tráfico real por la API y reconcilia <strong>por event_id</strong> SQL Server contra bronze hasta que no falte ni sobre nada. Si pasa, corre dbt.</p>' +
-      '<p>Medido desde cero (~1 min 15 s con imágenes en caché): <strong>4.880 en origen = 4.880 en bronze</strong>, 0 faltantes, 0 duplicados, convergió 23 s después del tráfico; dbt <strong>PASS=22</strong>.</p>' +
+      '<p>Medido en un clon limpio del repositorio: <strong>4.848 en origen = 4.848 en bronze</strong>, 0 faltantes, 0 duplicados, convergió 23 s después del tráfico; dbt <strong>PASS=22</strong>.</p>' +
       '<div class="concept"><b>Concepto</b><strong>Verificación end-to-end</strong>: la demo no muestra que “corre”; demuestra que cada evento llegó, una sola vez.</div>',
     codeLabel: 'README §1 · cómo correr la PoC',
     code:
-      'cp .env.example .env\n' +
-      'docker compose up -d --build          # bloquea hasta que termina la verificación end-to-end\n' +
-      'docker compose logs -f e2e dbt        # evidencia',
+      'Copy-Item .env.example .env                                         # Git Bash: cp\n' +
+      'docker compose up -d --build                                        # levanta y verifica end-to-end\n' +
+      'docker compose wait dbt                                             # espera silver/gold + tests\n' +
+      'powershell -ExecutionPolicy Bypass -File .\\scripts\\resultado.ps1    # veredicto (Git Bash: bash scripts/resultado.sh)',
     play: async function (c) {
       var tb = S('rect', { cls: 'term-bg', x: 20, y: 20, width: 570, height: 330, rx: 10 }, c.root);
       void tb;
@@ -1403,15 +1407,15 @@ button:focus-visible { outline: 3px solid var(--oltp); outline-offset: 2px; }
         ['$ cp .env.example .env', 'term'],
         ['$ docker compose up -d --build', 'term'],
         ['  (bloquea hasta que termina la verificación end-to-end)', 'term dim'],
-        ['$ docker compose logs -f e2e dbt', 'term'],
-        ['E2E PASS: SQL Server -> Debezium -> Kafka -> Spark -> Iceberg', 'term okt'],
-        ['  source events : 4880', 'term'],
-        ['    (1000 seed + 20 cuentas + 1752 pagos × 2', 'term dim'],
-        ['     + 178 reversos × 2)', 'term dim'],
-        ['  bronze events : 4880 (duplicates: 0)', 'term'],
-        ['  missing       : 0', 'term'],
-        ['  converged in  : 23s after traffic ended', 'term'],
-        ['dbt: freshness PASS — PASS=22 WARN=0 ERROR=0 SKIP=0 TOTAL=22', 'term okt']
+        ['$ bash scripts/resultado.sh', 'term'],
+        ['PRUEBA END-TO-END: APROBADA (E2E PASS)', 'term okt'],
+        ['  Eventos en SQL Server : 4848', 'term'],
+        ['    (1000 iniciales + 20 cuentas + 1738 pagos × 2', 'term dim'],
+        ['     + 176 reversos × 2)', 'term dim'],
+        ['  Eventos en lakehouse  : 4848', 'term'],
+        ['  Perdidos: 0 | Duplicados: 0 | sincronizado en 23 s', 'term'],
+        ['  Tests dbt: 22 de 22 aprobados', 'term'],
+        ['VEREDICTO: APROBADA', 'term okt']
       ];
       var tEls = lines.map(function (l, i) { return c.text(36, 52 + i * 24, '', { cls: l[1], size: 13.2 }); });
 
@@ -1437,7 +1441,7 @@ button:focus-visible { outline: 3px solid var(--oltp); outline-offset: 2px; }
         return b;
       });
 
-      var tileDefs = [['origen', '4880'], ['bronze', '4880'], ['convergió en', '23 s'], ['faltantes', '0'], ['duplicados', '0'], ['dbt tests', 'PASS=22']];
+      var tileDefs = [['origen', '4848'], ['bronze', '4848'], ['convergió en', '23 s'], ['faltantes', '0'], ['duplicados', '0'], ['dbt tests', 'PASS=22']];
       var tiles = tileDefs.map(function (d, i) {
         var col = i % 3, row = Math.floor(i / 3);
         var b = c.box({ x: 20 + col * 193, y: 368 + row * 82, w: 183, h: 72, k: i === 5 ? 'dbt' : (i < 2 ? 'iceberg' : 'ok'), top: true, title: d[0], ts: 13 });
@@ -1465,7 +1469,7 @@ button:focus-visible { outline: 3px solid var(--oltp); outline-offset: 2px; }
       }
       svcs[11].on(false);
       for (var t = 0; t < 5; t++) {
-        tiles[t].v.textContent = tiles[t].val === '4880' ? '4.880' : tiles[t].val;
+        tiles[t].v.textContent = tiles[t].val === '4848' ? '4.848' : tiles[t].val;
         c.fadeIn(tiles[t].b.g, 250); c.fadeIn(tiles[t].v, 250);
         await c.wait(200);
       }

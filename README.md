@@ -10,6 +10,8 @@ Esta prueba de concepto resuelve ese problema desacoplando el ciclo de vida de l
 4. **dbt** transforma, limpia y agrega los datos en capas *Silver* y *Gold* con pruebas de calidad automatizadas.
 5. **SQL Server** queda libre para purgar en lotes pequeños lo que ya fue capturado, conservando únicamente una ventana caliente.
 
+> **Recorrido visual:** abre [`docs/flujo-animado.html`](docs/flujo-animado.html) en el navegador (descárgalo y haz doble clic) para ver el flujo animado en 10 pasos.
+
 ```mermaid
 flowchart LR
     subgraph OLTP["Core Transaccional (.NET 8 + SQL Server)"]
@@ -244,8 +246,8 @@ docker compose down -v                                # Limpiar contenedores y v
 En lugar de elegir una sola técnica aislada, combinamos **Transactional Outbox + CDC + Buffer durable**, aprovechando lo mejor de cada una:
 
 * **Atomicidad sin *dual-write*:** Mediante un `SaveChangesInterceptor` de EF Core (`AuditOutboxInterceptor.cs`), cada cambio en entidades auditables genera una fila en `dbo.AuditOutbox` dentro de la **misma transacción** de negocio. Si el pago hace rollback, el log tampoco nace. El core nunca habla directo con Kafka; en pruebas con el pipeline apagado procesó 3.000 transacciones en 3,9 s (5.728 eventos) sin enterarse de la caída.
-* **Diseño físico pensado para no fragmentar:** La tabla `AuditOutbox` es angosta, *append-only* y usa `NEWSEQUENTIALID()` generado en cliente para insertar siempre al final del índice, evitando *page splits* y contención. Además, el interceptor soporta `[AuditIgnore]` para excluir campos técnicos o datos sensibles (PII).
-* **CDC solo sobre la Outbox:** Habilitamos CDC únicamente en `dbo.AuditOutbox` y no sobre `Accounts` o `Payments`. Esto desacopla el modelo interno del dominio frente al contrato analítico (`SchemaVersion`) y conserva contexto de negocio (actor, acción semántica como `REVERSED`).
+* **Diseño físico pensado para no fragmentar:** La tabla `AuditOutbox` es angosta, *append-only* y usa GUIDs secuenciales (generados por EF Core en el cliente, con `NEWSEQUENTIALID()` como default en la tabla) para insertar siempre al final del índice, evitando *page splits* y contención. Además, el interceptor soporta `[AuditIgnore]` para excluir campos técnicos o datos sensibles (PII).
+* **CDC solo sobre la Outbox:** Habilitamos CDC únicamente en `dbo.AuditOutbox` y no sobre `Accounts` o `Payments`. Esto desacopla el modelo interno del dominio frente al contrato analítico (`SchemaVersion`) y conserva contexto de negocio: actor, canal y los cambios `old/new` de cada propiedad (por ejemplo, el estado del pago `COMPLETED → REVERSED`).
 * **Retención controlada en OLTP:** Un servicio en segundo plano (`OutboxRetentionService`) purga registros antiguos en **lotes de 4.000 filas** (por debajo del umbral de ~5.000 locks donde SQL Server escala a bloqueo de tabla) y **solo si CDC ya los capturó** (`EXISTS` en `cdc.dbo_AuditOutbox_CT`). En pruebas purgó 21.000 filas dejando SQL Server en 5.733 mientras el Lakehouse conservó los 26.733 completos.
 
 ### Eje B: Diseño del Data Lakehouse (Iceberg + dbt + Glue)
@@ -343,6 +345,7 @@ Para evitar esa amplificación de escritura en una tabla *append-only*, combinam
 ├── docker-compose.yml              # Orquestación completa end-to-end
 ├── .env.example                    # Variables de entorno y versiones de imágenes
 ├── scripts/                        # resultado (veredicto), rastrear (seguir un evento), prueba-caida (caida + evidencia); .ps1 y .sh
+├── docs/flujo-animado.html         # Explicación animada del flujo paso a paso (abrir en el navegador)
 ├── app/                            # Core .NET 8 (EF Core Interceptor, OutboxRetentionService, API y tests xUnit)
 ├── infra/                          # Scripts de inicialización de SQL Server (CDC) y registro de Debezium
 ├── spark/                          # Configuración de catálogo Iceberg y jobs (ingesta, mantenimiento, E2E)

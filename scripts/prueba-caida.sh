@@ -50,12 +50,21 @@ docker compose ps -a connect spark-ingest --format "{{.Service}}: {{.State}}" | 
 
 step "PASO 2 - El core .NET sigue operando: $PAGOS transacciones de pago con el pipeline caido"
 sim=$(curl -s -X POST --max-time 600 "http://localhost:5080/api/simulate?accounts=20&payments=$PAGOS")
-info "Respuesta del core: $sim"
-info "El core no depende del pipeline: escribe negocio + outbox en SQL Server y responde."
+jnum() { echo "$sim" | grep -o "\"$1\":[0-9]*" | cut -d: -f2; }
+ACC=$(jnum accounts); PAY=$(jnum payments); REV=$(jnum reversals)
+CONF=$(jnum conflicts); REJ=$(jnum rejected); MS=$(jnum elapsedMs)
+# Desglose: los rechazos (concurrencia o saldo) no se confirman y por eso no generan eventos
+REJ_PAY=$((PAGOS - PAY - REJ)); REV_CONF=$((CONF - REJ_PAY)); EXPECTED=$((ACC + 2 * PAY + 2 * REV))
+info "Respuesta del core en $MS ms (sin depender del pipeline):"
+info "  $PAGOS pagos solicitados = $PAY confirmados + $REJ_PAY rechazados por concurrencia + $REJ rechazados por saldo"
+info "  $REV reversos confirmados ($REV_CONF reversos rechazados por concurrencia)"
+info "  Un rechazo no confirma la transaccion: no cambia el saldo y no genera eventos (outbox atomica)."
+info "  Eventos esperados: $ACC cuentas x1 + $PAY pagos x2 + $REV reversos x2 = $EXPECTED"
 
 step "PASO 3 - Con el pipeline caido, los eventos esperan en SQL Server (no se pierden)"
 counts "Durante la caida"
-info "Nuevos en SQL Server: $((SQL - SQL0)) | nuevos en el lakehouse: $((LAKE - LAKE0))"
+NEW_SQL=$((SQL - SQL0)); [ "$NEW_SQL" -eq "$EXPECTED" ] && CHECK="coincide" || CHECK="NO coincide"
+info "Nuevos en SQL Server: $NEW_SQL (esperados $EXPECTED: $CHECK) | nuevos en el lakehouse: $((LAKE - LAKE0))"
 
 step "PASO 4 - Se levanta el pipeline: Debezium retoma desde su ultimo LSN y Spark desde su checkpoint"
 docker compose start connect spark-ingest >/dev/null 2>&1

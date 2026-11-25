@@ -49,13 +49,24 @@ try {
 
     Write-Step "PASO 2 - El core .NET sigue operando: $Pagos transacciones de pago con el pipeline caido"
     $sim = Invoke-RestMethod -Method Post -TimeoutSec 600 -Uri "http://localhost:5080/api/simulate?accounts=20&payments=$Pagos"
-    Write-Info ("Respuesta del core: {0} cuentas, {1} pagos, {2} reversos, {3} conflictos de concurrencia, en {4} ms" -f `
-        $sim.accounts, $sim.payments, $sim.reversals, $sim.conflicts, $sim.elapsedMs)
-    Write-Info "El core no depende del pipeline: escribe negocio + outbox en SQL Server y responde."
+    # Desglose: los rechazos (concurrencia o saldo) no se confirman y por eso no generan eventos
+    $rejPay   = $Pagos - $sim.payments - $sim.rejected
+    $revConf  = $sim.conflicts - $rejPay
+    $expected = $sim.accounts + 2 * $sim.payments + 2 * $sim.reversals
+    Write-Info ("Respuesta del core en {0} ms (sin depender del pipeline):" -f $sim.elapsedMs)
+    Write-Info ("  {0} pagos solicitados = {1} confirmados + {2} rechazados por concurrencia + {3} rechazados por saldo" -f `
+        $Pagos, $sim.payments, $rejPay, $sim.rejected)
+    Write-Info ("  {0} reversos confirmados ({1} reversos rechazados por concurrencia)" -f $sim.reversals, $revConf)
+    Write-Info "  Un rechazo no confirma la transaccion: no cambia el saldo y no genera eventos (outbox atomica)."
+    Write-Info ("  Eventos esperados: {0} cuentas x1 + {1} pagos x2 + {2} reversos x2 = {3}" -f `
+        $sim.accounts, $sim.payments, $sim.reversals, $expected)
 
     Write-Step "PASO 3 - Con el pipeline caido, los eventos esperan en SQL Server (no se pierden)"
     $c1 = Write-Counts "Durante la caida"
-    Write-Info ("Nuevos en SQL Server: {0} | nuevos en el lakehouse: {1}" -f ($c1.Sql - $c0.Sql), ($c1.Lake - $c0.Lake))
+    $newSql = $c1.Sql - $c0.Sql
+    $check = if ($newSql -eq $expected) { 'coincide' } else { 'NO coincide' }
+    Write-Info ("Nuevos en SQL Server: {0} (esperados {1}: {2}) | nuevos en el lakehouse: {3}" -f `
+        $newSql, $expected, $check, ($c1.Lake - $c0.Lake))
 
     Write-Step "PASO 4 - Se levanta el pipeline: Debezium retoma desde su ultimo LSN y Spark desde su checkpoint"
     docker compose start connect spark-ingest 2>$null | Out-Null

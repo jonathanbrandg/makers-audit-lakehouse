@@ -68,9 +68,9 @@ RESULTADO DE LA PRUEBA DE CONCEPTO
   PRUEBA END-TO-END: APROBADA (E2E PASS)
   SQL Server -> Debezium -> Kafka -> Spark -> Iceberg
 
-  Operaciones de negocio simuladas : 20 cuentas, 1741 pagos, 148 reversos
-  Eventos en SQL Server (acumulado) : 8650
-  Eventos en el lakehouse (acumul.) : 8650
+  Operaciones de negocio simuladas : 20 cuentas, 1738 pagos, 176 reversos
+  Eventos en SQL Server (acumulado) : 4848
+  Eventos en el lakehouse (acumul.) : 4848
   Eventos perdidos                  : 0
   Eventos duplicados                : 0
   Tiempo hasta quedar sincronizado  : 23 s
@@ -81,6 +81,15 @@ RESULTADO DE LA PRUEBA DE CONCEPTO
   [OK] dbt  - capas silver y gold construidas y validadas
 
 VEREDICTO: APROBADA
+```
+
+**Cómo se lee:** se solicitan 2000 pagos, pero la simulación usa 8 hilos sobre solo 20 cuentas. Cuando dos
+pagos tocan el mismo saldo a la vez, la concurrencia optimista (`rowversion`) confirma uno y rechaza el otro.
+El rechazado no se confirma y **no genera eventos**, por eso se confirman 1738 y no 2000. Cada pago y cada
+reverso generan 2 eventos (el pago y el saldo de la cuenta), así que el total cuadra exacto:
+
+```
+1000 iniciales (init.sql) + 20 cuentas x1 + 1738 pagos x2 + 176 reversos x2 = 4848
 ```
 
 *(Si deseas volver a validar después de hacer pruebas manuales por la API sin regenerar tráfico masivo, ejecuta `.\scripts\resultado.ps1 -Actualizar` o `bash scripts/resultado.sh --actualizar`).*
@@ -109,9 +118,14 @@ Evidencia real:
            connect: exited
            spark-ingest: exited
 [2026-11-25 15:44:57] PASO 2 - El core .NET sigue operando: 3000 transacciones de pago con el pipeline caido
-           Respuesta del core: 20 cuentas, 2616 pagos, 253 reversos, 391 conflictos de concurrencia, en 3865 ms
+           Respuesta del core en 3865 ms (sin depender del pipeline):
+             3000 pagos solicitados = 2616 confirmados + 384 rechazados por concurrencia + 0 rechazados por saldo
+             253 reversos confirmados (7 reversos rechazados por concurrencia)
+             Un rechazo no confirma la transaccion: no cambia el saldo y no genera eventos (outbox atomica).
+             Eventos esperados: 20 cuentas x1 + 2616 pagos x2 + 253 reversos x2 = 5758
 [2026-11-25 15:45:01] PASO 3 - Con el pipeline caido, los eventos esperan en SQL Server (no se pierden)
            Durante la caida: SQL Server = 24191 eventos | lakehouse = 18433 | pendientes de llegar = 5758
+           Nuevos en SQL Server: 5758 (esperados 5758: coincide) | nuevos en el lakehouse: 0
 [2026-11-25 15:45:13] PASO 4 - Se levanta el pipeline: Debezium retoma desde su ultimo LSN y Spark desde su checkpoint
 [2026-11-25 15:45:15] PASO 5 - Reconciliacion evento por evento (SQL Server vs lakehouse) hasta quedar al dia
            Recuperacion completa en 17 s desde que se levanto el pipeline

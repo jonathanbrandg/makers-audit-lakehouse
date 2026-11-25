@@ -1,0 +1,3 @@
+audit_lakehouse/target/
+audit_lakehouse/logs/
+audit_lakehouse/dbt_packages/

@@ -1,0 +1,13 @@
+audit_lakehouse:
+  target: local
+  outputs:
+    # Local PoC: in-process Spark session; catalog/S3 config comes from
+    # /opt/spark/conf/spark-defaults.conf (default catalog = lake).
+    local:
+      type: spark
+      method: session
+      host: NA
+      schema: audit_silver
+      threads: 1
+    # On AWS the same project runs with dbt-glue (Glue interactive sessions)
+    # against the Glue Data Catalog: models and tests stay unchanged.

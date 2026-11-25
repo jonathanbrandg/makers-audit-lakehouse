@@ -1,0 +1,23 @@
+{
+  "connector.class": "io.debezium.connector.sqlserver.SqlServerConnector",
+  "tasks.max": "1",
+  "database.hostname": "sqlserver",
+  "database.port": "1433",
+  "database.user": "sa",
+  "database.password": "__MSSQL_SA_PASSWORD__",
+  "database.names": "AuditDb",
+  "database.encrypt": "false",
+  "topic.prefix": "mssql",
+  "table.include.list": "dbo.AuditOutbox",
+  "snapshot.mode": "initial",
+  "tombstones.on.delete": "false",
+  "include.schema.changes": "false",
+  "schema.history.internal.kafka.bootstrap.servers": "redpanda:29092",
+  "schema.history.internal.kafka.topic": "_schema-history.audit",
+  "key.converter": "org.apache.kafka.connect.json.JsonConverter",
+  "key.converter.schemas.enable": "false",
+  "value.converter": "org.apache.kafka.connect.json.JsonConverter",
+  "value.converter.schemas.enable": "false",
+  "producer.override.acks": "all",
+  "producer.override.enable.idempotence": "true"
+}

@@ -1,0 +1,22 @@
+# .NET / Visual Studio
+.vs/
+bin/
+obj/
+
+# dbt / Spark (generados al ejecutar)
+target/
+logs/
+dbt_packages/
+metastore_db/
+derby.log
+spark-warehouse/
+
+# Python
+__pycache__/
+.venv/
+
+# Evidencia generada por scripts/prueba-caida
+evidencia/
+
+# Configuracion local (se crea con: Copy-Item .env.example .env)
+.env

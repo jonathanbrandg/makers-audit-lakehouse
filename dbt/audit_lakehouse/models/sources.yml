@@ -1,0 +1,23 @@
+version: 2
+
+sources:
+  - name: audit_bronze
+    description: Raw CDC events landed by the PySpark streaming job (spark/jobs/ingest_audit_events.py).
+    schema: audit
+    loaded_at_field: ingested_at
+    freshness:
+      warn_after: {count: 30, period: minute}
+      error_after: {count: 2, period: hour}
+    tables:
+      - name: events_bronze
+        description: Append-only, deduplicated by event_id, partitioned by days(event_ts).
+        columns:
+          - name: event_id
+            tests: [not_null, unique]
+          - name: event_ts
+            tests: [not_null]
+          - name: schema_version
+            tests:
+              - accepted_values:
+                  values: [1]
+                  quote: false

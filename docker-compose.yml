@@ -1,0 +1,367 @@
+# PoC end-to-end: SQL Server (outbox + CDC) -> Debezium -> Redpanda (Kafka API)
+#                 -> PySpark Structured Streaming -> Apache Iceberg (REST catalog + S3 local)
+#
+# Demo end-to-end (un comando):
+#   docker compose up -d --build && docker compose logs -f e2e dbt
+#   -> e2e: tráfico real por la API .NET + reconciliación SQL Server == Iceberg bronze
+#   -> dbt: silver/gold + tests (bronze == silver == gold); solo corre si e2e pasa
+#
+# Opcionales:
+#   UI Kafka/Connect:  docker compose --profile ui up -d redpanda-console
+#   Carga cruda:       docker compose --profile load up -d load-generator
+#   Mantenimiento:     docker compose run --rm spark-maintenance
+#   Inspección:        docker compose run --rm spark-inspect
+#
+# En AWS el catálogo REST se reemplaza por Glue Data Catalog (spark.sql.catalog.lake.type=glue)
+# y el object store local por S3: el modelo de tablas y los jobs no cambian.
+
+name: makers-audit-lakehouse
+
+x-aws-local-creds: &aws-local-creds
+  AWS_ACCESS_KEY_ID: ${S3_ACCESS_KEY_ID}
+  AWS_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY}
+  AWS_REGION: us-east-1
+  # SDK v2 >= 2.30 agrega checksums por defecto; el S3 local no los soporta
+  AWS_REQUEST_CHECKSUM_CALCULATION: when_required
+  AWS_RESPONSE_CHECKSUM_VALIDATION: when_required
+
+x-spark-base: &spark-base
+  image: apache/spark:${SPARK_IMAGE_TAG}
+  user: root # PoC: volúmenes nombrados se crean como root
+  environment:
+    <<: *aws-local-creds
+    PYTHONPATH: /opt/spark-jobs
+  volumes:
+    - ./spark/conf/spark-defaults.conf:/opt/spark/conf/spark-defaults.conf:ro
+    - ./spark/jobs:/opt/spark-jobs:ro
+    - spark-ivy:/opt/spark/ivy
+    - spark-checkpoints:/opt/spark/checkpoints
+  depends_on:
+    iceberg-rest:
+      condition: service_started
+    objectstore-init:
+      condition: service_completed_successfully
+
+services:
+  # ---------------------------------------------------------------- Origen OLTP
+  sqlserver:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    environment:
+      ACCEPT_EULA: "Y"
+      MSSQL_SA_PASSWORD: ${MSSQL_SA_PASSWORD}
+      MSSQL_PID: Developer
+      MSSQL_AGENT_ENABLED: "true" # CDC necesita SQL Server Agent
+    ports:
+      - "1433:1433"
+    volumes:
+      - sqlserver-data:/var/opt/mssql
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P \"$$MSSQL_SA_PASSWORD\" -C -b -Q 'SELECT 1' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 20s
+
+  sqlserver-init:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    environment:
+      MSSQL_SA_PASSWORD: ${MSSQL_SA_PASSWORD}
+    volumes:
+      - ./infra/sqlserver:/scripts:ro
+    entrypoint: ["/bin/bash", "-c", "/opt/mssql-tools18/bin/sqlcmd -S sqlserver -U sa -P \"$$MSSQL_SA_PASSWORD\" -C -b -i /scripts/init.sql"]
+    depends_on:
+      sqlserver:
+        condition: service_healthy
+    restart: "no"
+
+  # Core transaccional .NET 8: escribe negocio + outbox en la misma transacción
+  # (interceptor EF Core) y purga la outbox ya capturada por CDC (retención OLTP).
+  core-api:
+    build:
+      context: ./app
+    image: makers-audit-core-api:local
+    environment:
+      ConnectionStrings__Core: "Server=sqlserver,1433;Database=AuditDb;User Id=sa;Password=${MSSQL_SA_PASSWORD};Encrypt=False;TrustServerCertificate=True"
+      OutboxRetention__RetentionMinutes: ${OUTBOX_RETENTION_MINUTES}
+      OutboxRetention__IntervalSeconds: ${OUTBOX_RETENTION_INTERVAL_SECONDS}
+    ports:
+      - "5080:8080"
+    depends_on:
+      sqlserver-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  # Carga cruda alternativa: INSERT directo en la outbox (sin pasar por la app).
+  load-generator:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    profiles: ["load"]
+    environment:
+      MSSQL_SA_PASSWORD: ${MSSQL_SA_PASSWORD}
+      LOAD_BATCH_ROWS: ${LOAD_BATCH_ROWS}
+      LOAD_INTERVAL_SECONDS: ${LOAD_INTERVAL_SECONDS}
+      LOAD_BATCHES: ${LOAD_BATCHES}
+    volumes:
+      - ./infra/sqlserver:/scripts:ro
+    entrypoint: ["/bin/bash", "/scripts/generate-load.sh"]
+    depends_on:
+      sqlserver-init:
+        condition: service_completed_successfully
+
+  # ---------------------------------------------------------------- Buffer durable
+  redpanda:
+    image: redpandadata/redpanda:${REDPANDA_IMAGE_TAG}
+    command:
+      - redpanda
+      - start
+      - --smp=1
+      - --memory=1G
+      - --overprovisioned
+      - --node-id=0
+      - --kafka-addr=internal://0.0.0.0:29092,external://0.0.0.0:9092
+      - --advertise-kafka-addr=internal://redpanda:29092,external://localhost:9092
+    ports:
+      - "9092:9092"
+    volumes:
+      - redpanda-data:/var/lib/redpanda/data
+    healthcheck:
+      test: ["CMD-SHELL", "rpk cluster health -X brokers=localhost:29092 | grep -E 'Healthy:.+true' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+
+  redpanda-init:
+    image: redpandadata/redpanda:${REDPANDA_IMAGE_TAG}
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - >
+        rpk topic create ${AUDIT_TOPIC} -X brokers=redpanda:29092
+        -p 3 -c retention.ms=${AUDIT_TOPIC_RETENTION_MS} -c cleanup.policy=delete
+        || rpk topic alter-config ${AUDIT_TOPIC} -X brokers=redpanda:29092
+        --set retention.ms=${AUDIT_TOPIC_RETENTION_MS}
+    depends_on:
+      redpanda:
+        condition: service_healthy
+    restart: "no"
+
+  redpanda-console:
+    image: redpandadata/console:${REDPANDA_CONSOLE_IMAGE_TAG}
+    profiles: ["ui"]
+    environment:
+      KAFKA_BROKERS: redpanda:29092
+      KAFKA_CONNECT_ENABLED: "true"
+      KAFKA_CONNECT_CLUSTERS_NAME: debezium
+      KAFKA_CONNECT_CLUSTERS_URL: http://connect:8083
+    ports:
+      - "8085:8080"
+    depends_on:
+      redpanda:
+        condition: service_healthy
+
+  # ---------------------------------------------------------------- CDC
+  connect:
+    image: quay.io/debezium/connect:${DEBEZIUM_IMAGE_TAG}
+    environment:
+      BOOTSTRAP_SERVERS: redpanda:29092
+      GROUP_ID: debezium-audit
+      CONFIG_STORAGE_TOPIC: _connect_configs
+      OFFSET_STORAGE_TOPIC: _connect_offsets
+      STATUS_STORAGE_TOPIC: _connect_status
+      CONNECT_CONFIG_STORAGE_REPLICATION_FACTOR: "1"
+      CONNECT_OFFSET_STORAGE_REPLICATION_FACTOR: "1"
+      CONNECT_STATUS_STORAGE_REPLICATION_FACTOR: "1"
+    ports:
+      - "8083:8083"
+    depends_on:
+      redpanda-init:
+        condition: service_completed_successfully
+      sqlserver-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fs http://localhost:8083/connectors || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
+  connect-register:
+    image: curlimages/curl:${CURL_IMAGE_TAG}
+    environment:
+      MSSQL_SA_PASSWORD: ${MSSQL_SA_PASSWORD}
+    volumes:
+      - ./infra/debezium:/debezium:ro
+    entrypoint: ["/bin/sh", "/debezium/register.sh"]
+    depends_on:
+      connect:
+        condition: service_healthy
+    restart: "no"
+
+  # ---------------------------------------------------------------- Lakehouse
+  # S3-compatible local (SeaweedFS; las imágenes de MinIO ya no son públicas).
+  # Identidad S3 generada desde .env. En AWS es S3 real con IAM.
+  objectstore:
+    image: chrislusf/seaweedfs:${SEAWEEDFS_IMAGE_TAG}
+    environment:
+      S3_ACCESS_KEY_ID: ${S3_ACCESS_KEY_ID}
+      S3_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY}
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        cat > /tmp/s3.json <<EOF
+        {"identities":[{"name":"lakehouse","credentials":[{"accessKey":"$${S3_ACCESS_KEY_ID}","secretKey":"$${S3_SECRET_ACCESS_KEY}"}],"actions":["Admin","Read","Write","List","Tagging"]}]}
+        EOF
+        exec weed server -dir=/data -s3 -s3.port=8333 -s3.config=/tmp/s3.json -volume.max=0 -master.volumeSizeLimitMB=1024
+    ports:
+      - "8333:8333"   # API S3
+      - "8888:8888"   # UI del filer: navegar el bucket en http://localhost:8888/buckets/warehouse/
+    volumes:
+      - objectstore-data:/data
+
+  objectstore-init:
+    image: amazon/aws-cli:${AWS_CLI_IMAGE_TAG}
+    environment:
+      <<: *aws-local-creds
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - >
+        until aws --endpoint-url http://objectstore:8333 s3api list-buckets >/dev/null 2>&1; do sleep 2; done;
+        aws --endpoint-url http://objectstore:8333 s3api head-bucket --bucket warehouse 2>/dev/null
+        || aws --endpoint-url http://objectstore:8333 s3 mb s3://warehouse
+    depends_on:
+      - objectstore
+    restart: "no"
+
+  iceberg-rest:
+    image: apache/iceberg-rest-fixture:${ICEBERG_REST_IMAGE_TAG}
+    environment:
+      <<: *aws-local-creds
+      CATALOG_WAREHOUSE: s3://warehouse/
+      CATALOG_IO__IMPL: org.apache.iceberg.aws.s3.S3FileIO
+      CATALOG_S3_ENDPOINT: http://objectstore:8333
+      CATALOG_S3_PATH__STYLE__ACCESS: "true"
+      CATALOG_S3_CHUNKED__ENCODING__ENABLED: "false"
+      # Catálogo persistente (por defecto el fixture usa SQLite en memoria)
+      CATALOG_URI: jdbc:sqlite:file:/catalog/iceberg_catalog.db
+      CATALOG_JDBC_USER: user
+      CATALOG_JDBC_PASSWORD: password
+    user: root
+    ports:
+      - "8181:8181"
+    volumes:
+      - iceberg-catalog:/catalog
+    depends_on:
+      objectstore-init:
+        condition: service_completed_successfully
+
+  # ---------------------------------------------------------------- Spark
+  spark-ingest:
+    <<: *spark-base
+    command:
+      - /opt/spark/bin/spark-submit
+      - /opt/spark-jobs/ingest_audit_events.py
+    environment:
+      <<: *aws-local-creds
+      PYTHONPATH: /opt/spark-jobs
+      KAFKA_BOOTSTRAP: redpanda:29092
+      AUDIT_TOPIC: ${AUDIT_TOPIC}
+      MAX_OFFSETS_PER_TRIGGER: ${MAX_OFFSETS_PER_TRIGGER}
+      TRIGGER_MODE: ${TRIGGER_MODE}
+      TRIGGER_INTERVAL: ${TRIGGER_INTERVAL}
+    ports:
+      - "4040:4040"
+    # UI arriba = jars resueltos y query iniciada. Los demás jobs Spark esperan este
+    # estado para no descargar dependencias en paralelo sobre el mismo cache de Ivy.
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:4040', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 60
+      start_period: 30s
+    depends_on:
+      iceberg-rest:
+        condition: service_started
+      objectstore-init:
+        condition: service_completed_successfully
+      redpanda-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  # Demo + verificación de cero pérdida: corre una vez y termina en PASS (0) / FAIL (1).
+  e2e:
+    <<: *spark-base
+    command:
+      - /opt/spark/bin/spark-submit
+      - /opt/spark-jobs/verify_e2e.py
+    environment:
+      <<: *aws-local-creds
+      PYTHONPATH: /opt/spark-jobs
+      MSSQL_SA_PASSWORD: ${MSSQL_SA_PASSWORD}
+      E2E_ACCOUNTS: ${E2E_ACCOUNTS:-20}
+      E2E_PAYMENTS: ${E2E_PAYMENTS:-2000}
+      E2E_TIMEOUT_SECONDS: ${E2E_TIMEOUT_SECONDS:-600}
+      E2E_SKIP_TRAFFIC: ${E2E_SKIP_TRAFFIC:-false} # true = solo reconciliar (scripts/resultado -Actualizar)
+    depends_on:
+      core-api:
+        condition: service_started
+      connect-register:
+        condition: service_completed_successfully
+      spark-ingest:
+        condition: service_healthy
+      iceberg-rest:
+        condition: service_started
+      objectstore-init:
+        condition: service_completed_successfully
+    restart: "no"
+
+  spark-maintenance:
+    <<: *spark-base
+    profiles: ["ops"]
+    command:
+      - /opt/spark/bin/spark-submit
+      - /opt/spark-jobs/maintenance.py
+    environment:
+      <<: *aws-local-creds
+      PYTHONPATH: /opt/spark-jobs
+      COMPACT_INCLUDE_OPEN_PARTITIONS: ${COMPACT_INCLUDE_OPEN_PARTITIONS}
+      AUDIT_RETENTION_DAYS: ${AUDIT_RETENTION_DAYS}
+      SNAPSHOT_RETENTION_HOURS: ${SNAPSHOT_RETENTION_HOURS}
+      SNAPSHOT_RETAIN_LAST: ${SNAPSHOT_RETAIN_LAST}
+    restart: "no"
+
+  spark-inspect:
+    <<: *spark-base
+    profiles: ["ops"]
+    command:
+      - /opt/spark/bin/spark-submit
+      - /opt/spark-jobs/inspect_lake.py
+    restart: "no"
+
+  # ---------------------------------------------------------------- dbt (silver / gold)
+  # Mismo runtime Spark + Iceberg que la ingesta (dbt-spark method=session).
+  dbt:
+    <<: *spark-base
+    build:
+      context: ./dbt
+      args:
+        SPARK_IMAGE_TAG: ${SPARK_IMAGE_TAG}
+    image: makers-audit-dbt:local
+    working_dir: /dbt/audit_lakehouse
+    depends_on:
+      e2e:
+        condition: service_completed_successfully
+    environment:
+      <<: *aws-local-creds
+    volumes:
+      - ./spark/conf/spark-defaults.conf:/opt/spark/conf/spark-defaults.conf:ro
+      - ./dbt:/dbt
+      - spark-ivy:/opt/spark/ivy
+    entrypoint: ["/bin/sh", "-c"]
+    # freshness de la fuente primero: si bronze está atrasado, se avisa antes de transformar
+    command: ["dbt source freshness && dbt build"]
+    restart: "no"
+
+volumes:
+  sqlserver-data:
+  redpanda-data:
+  objectstore-data:
+  iceberg-catalog:
+  spark-ivy:
+  spark-checkpoints:

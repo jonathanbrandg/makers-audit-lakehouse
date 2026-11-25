@@ -1,0 +1,1625 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Flujo del lakehouse</title>
+<meta name="description" content="Explicación animada, paso a paso, del pipeline .NET 8 + SQL Server -> CDC -> Debezium -> Kafka -> Spark -> Iceberg -> dbt.">
+<style>
+:root {
+  --bg: #f4f6fa;
+  --panel: #ffffff;
+  --panel-2: #eef1f6;
+  --fg: #151821;
+  --muted: #545b6b;
+  --line: #d3d8e2;
+  --wire: #8a93a6;
+  --oltp: #2457d6;
+  --cdc: #b8235f;
+  --kafka: #6d35d8;
+  --spark: #c4470b;
+  --iceberg: #0b7f75;
+  --dbt: #96600a;
+  --ext: #5f6b80;
+  --ok: #157a3a;
+  --bad: #c21d1d;
+  --warn: #a35a00;
+  --term-bg: #10131c;
+  --term-fg: #d9dde8;
+  --term-dim: #8c93a6;
+  --term-ok: #6ee79a;
+  --sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --mono: ui-monospace, "Cascadia Mono", "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  color-scheme: light dark;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0d1016;
+    --panel: #161a23;
+    --panel-2: #1d222d;
+    --fg: #e9ecf2;
+    --muted: #a7afbf;
+    --line: #2e3542;
+    --wire: #6f7890;
+    --oltp: #79a3ff;
+    --cdc: #f27aae;
+    --kafka: #b096ff;
+    --spark: #ff9459;
+    --iceberg: #43cbbd;
+    --dbt: #e6b84d;
+    --ext: #9aa6ba;
+    --ok: #57d98a;
+    --bad: #ff6f6f;
+    --warn: #f0a640;
+    --term-bg: #090b10;
+  }
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body {
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--sans);
+  font-size: 17px;
+  line-height: 1.5;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+code, pre, .mono { font-family: var(--mono); }
+code { font-size: .9em; background: var(--panel-2); padding: .05em .35em; border-radius: 4px; }
+
+/* ---------- header ---------- */
+.top {
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between;
+  gap: 10px 24px; padding: 14px 24px; border-bottom: 1px solid var(--line); background: var(--panel);
+}
+.top h1 { font-size: 1.2rem; margin: 0; line-height: 1.25; }
+.top .tag { margin: 2px 0 0; color: var(--muted); font-size: .92rem; }
+.dots { display: flex; flex-wrap: wrap; gap: 6px; }
+.dots button {
+  width: 34px; height: 34px; border-radius: 50%; border: 1.5px solid var(--line);
+  background: var(--panel); color: var(--muted); font: 600 .85rem var(--sans); cursor: pointer;
+}
+.dots button:hover { border-color: var(--fg); color: var(--fg); }
+.dots button.seen { color: var(--fg); }
+.dots button[aria-current="step"] { background: var(--fg); color: var(--panel); border-color: var(--fg); }
+
+/* ---------- main layout ---------- */
+.layout {
+  flex: 1; display: grid; gap: 20px; padding: 18px 24px;
+  grid-template-columns: minmax(0, 1.75fr) minmax(300px, 1fr); align-items: start;
+}
+.stage-wrap {
+  background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 12px;
+}
+#stage { display: block; width: 100%; height: auto; max-height: 72vh; font-family: var(--sans); }
+.narr {
+  margin: 8px 4px 2px; min-height: 3em; font-size: 1rem; color: var(--fg);
+  border-left: 4px solid var(--fg); padding: 2px 0 2px 12px;
+}
+.legend { list-style: none; display: flex; flex-wrap: wrap; gap: 6px 16px; margin: 10px 4px 0; padding: 0; font-size: .82rem; color: var(--muted); }
+.legend li { display: flex; align-items: center; gap: 6px; }
+.legend i { width: 12px; height: 12px; border-radius: 3px; background: var(--k); display: inline-block; }
+
+.explain { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 18px 20px; }
+.kicker { margin: 0; font-size: .82rem; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); font-weight: 600; }
+.explain h2 { font-size: 1.35rem; line-height: 1.25; margin: 4px 0 10px; }
+.explain p { margin: 0 0 10px; }
+.concept {
+  background: var(--panel-2); border-radius: 10px; padding: 10px 12px; font-size: .93rem; margin: 12px 0;
+}
+.concept b:first-child { display: block; font-size: .78rem; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin-bottom: 2px; }
+.code-label { font-size: .78rem; color: var(--muted); margin: 14px 0 4px; font-family: var(--mono); }
+pre.code {
+  margin: 0; background: var(--term-bg); color: var(--term-fg); border-radius: 10px; padding: 10px 12px;
+  font-size: 12.5px; line-height: 1.45; overflow-x: auto; white-space: pre;
+}
+
+/* ---------- controls ---------- */
+.controls {
+  position: sticky; bottom: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px;
+  padding: 10px 24px; background: var(--panel); border-top: 1px solid var(--line);
+}
+.controls button {
+  font: 600 .95rem var(--sans); padding: 8px 14px; border-radius: 9px; cursor: pointer;
+  border: 1.5px solid var(--line); background: var(--panel); color: var(--fg); min-height: 40px;
+}
+.controls button:hover:not(:disabled) { border-color: var(--fg); }
+.controls button:disabled { opacity: .4; cursor: default; }
+.controls button.primary { background: var(--fg); color: var(--panel); border-color: var(--fg); min-width: 140px; }
+.controls .status { font-size: .88rem; color: var(--muted); margin-left: 6px; }
+.controls .hint { margin-left: auto; font-size: .82rem; color: var(--muted); }
+.progress { flex-basis: 100%; height: 4px; background: var(--panel-2); border-radius: 2px; overflow: hidden; order: -1; }
+.progress span { display: block; height: 100%; background: var(--fg); width: 10%; transition: width .3s; }
+button:focus-visible { outline: 3px solid var(--oltp); outline-offset: 2px; }
+
+@media (max-width: 1000px) {
+  .layout { grid-template-columns: 1fr; padding: 12px 16px; }
+  .top, .controls { padding-left: 16px; padding-right: 16px; }
+  .controls .hint { display: none; }
+}
+@media (min-width: 1600px) {
+  body { font-size: 19px; }
+  pre.code { font-size: 14px; }
+}
+
+/* ---------- SVG vocabulary ---------- */
+#stage text { font-family: var(--sans); }
+#stage .mono { font-family: var(--mono); }
+#stage .term { font-family: var(--mono); white-space: pre; }
+.node .bg { fill: color-mix(in srgb, var(--k) 11%, var(--panel)); stroke: var(--k); stroke-width: 1.8; }
+.node.on .bg { stroke-width: 3.4; fill: color-mix(in srgb, var(--k) 22%, var(--panel)); filter: drop-shadow(0 0 6px color-mix(in srgb, var(--k) 65%, transparent)); }
+.node.dim { opacity: .32; }
+.node.bad .bg { stroke: var(--bad); fill: color-mix(in srgb, var(--bad) 14%, var(--panel)); }
+.node.good .bg { stroke: var(--ok); fill: color-mix(in srgb, var(--ok) 14%, var(--panel)); }
+.node.plain .bg { fill: var(--panel); stroke: var(--line); }
+.node.hidden-bg .bg { fill: none; stroke: none; }
+.t-title { fill: var(--fg); font-weight: 650; }
+.t-sub { fill: var(--muted); }
+.t-strong { fill: var(--fg); font-weight: 650; }
+.t-ok { fill: var(--ok); font-weight: 700; }
+.t-bad { fill: var(--bad); font-weight: 700; }
+.t-warn { fill: var(--warn); font-weight: 700; }
+.t-k { fill: var(--k); font-weight: 700; }
+.big { font-weight: 750; fill: var(--fg); }
+.wire { fill: none; stroke: var(--wire); stroke-width: 2; }
+.wire.dash { stroke-dasharray: 6 5; }
+.wire.bad { stroke: var(--bad); }
+.arrowhead { fill: var(--wire); }
+.tok circle { fill: var(--k); stroke: var(--panel); stroke-width: 2; }
+.tok text { fill: var(--panel); font-weight: 700; font-family: var(--sans); }
+.tok.ghost circle { fill: none; stroke: var(--k); stroke-dasharray: 3 2; }
+.tok.ghost text { fill: var(--k); }
+.lane { fill: var(--panel); stroke: color-mix(in srgb, var(--k) 45%, var(--line)); stroke-width: 1.2; }
+.file { fill: color-mix(in srgb, var(--k) 30%, var(--panel)); stroke: var(--k); stroke-width: 1.4; }
+.file.orphan { fill: none; stroke-dasharray: 4 3; }
+.file.gray { fill: var(--panel-2); stroke: var(--wire); }
+.zone { fill: color-mix(in srgb, var(--warn) 9%, transparent); stroke: var(--warn); stroke-dasharray: 5 4; stroke-width: 1.2; }
+.txbox { fill: none; stroke: var(--k); stroke-dasharray: 7 5; stroke-width: 1.5; }
+.cross { stroke: var(--bad); stroke-width: 5; stroke-linecap: round; }
+.term-bg { fill: var(--term-bg); stroke: var(--line); }
+.term { fill: var(--term-fg); font-family: var(--mono); }
+.term.dim { fill: var(--term-dim); }
+.term.okt { fill: var(--term-ok); font-weight: 700; }
+.ring-bg { fill: none; stroke: var(--line); stroke-width: 4; }
+.ring { fill: none; stroke: var(--k); stroke-width: 4; stroke-linecap: round; }
+.meter-bg { fill: var(--panel-2); stroke: var(--line); }
+.meter { fill: var(--ok); }
+.thresh { stroke: var(--bad); stroke-width: 2.5; stroke-dasharray: 4 3; }
+.bar-old { fill: color-mix(in srgb, var(--k) 28%, var(--panel)); stroke: var(--k); }
+.overlay-bad { fill: color-mix(in srgb, var(--bad) 45%, transparent); }
+.sq { fill: var(--panel-2); stroke: var(--line); }
+.sq.pass { fill: var(--ok); stroke: var(--ok); }
+
+@media (prefers-reduced-motion: reduce) {
+  .progress span { transition: none; }
+}
+</style>
+</head>
+<body>
+<header class="top">
+  <div>
+    <h1>Del core .NET al lakehouse: cómo viaja un evento de auditoría</h1>
+    <p class="tag">.NET 8 + SQL Server → CDC → Debezium → Kafka → Spark → Iceberg → dbt</p>
+  </div>
+  <nav class="dots" id="dots" aria-label="Pasos"></nav>
+</header>
+
+<main class="layout">
+  <section class="stage-wrap" aria-label="Diagrama animado">
+    <svg id="stage" viewBox="0 0 960 540" role="img" aria-labelledby="sceneTitle"></svg>
+    <p id="narr" class="narr" aria-live="polite"></p>
+    <ul class="legend" aria-label="Colores por componente">
+      <li style="--k:var(--oltp)"><i></i>.NET / SQL Server</li>
+      <li style="--k:var(--cdc)"><i></i>CDC / Debezium</li>
+      <li style="--k:var(--kafka)"><i></i>Kafka (Redpanda)</li>
+      <li style="--k:var(--spark)"><i></i>Spark</li>
+      <li style="--k:var(--iceberg)"><i></i>Iceberg / catálogo</li>
+      <li style="--k:var(--dbt)"><i></i>dbt</li>
+    </ul>
+  </section>
+
+  <aside class="explain">
+    <p class="kicker" id="kicker">Paso 1 de 10</p>
+    <h2 id="sceneTitle"></h2>
+    <div id="sceneText"></div>
+    <p class="code-label" id="codeLabel"></p>
+    <pre class="code" id="sceneCode"></pre>
+  </aside>
+</main>
+
+<footer class="controls">
+  <div class="progress" aria-hidden="true"><span id="progress"></span></div>
+  <button id="btnPrev" type="button" aria-label="Paso anterior">◀ Anterior</button>
+  <button id="btnPlay" type="button" class="primary">▶ Reproducir</button>
+  <button id="btnNext" type="button" aria-label="Paso siguiente">Siguiente ▶</button>
+  <button id="btnReplay" type="button">↺ Repetir paso</button>
+  <span class="status" id="status" aria-live="polite"></span>
+  <span class="hint">← → navegar · espacio reproducir/pausar · R repetir</span>
+</footer>
+
+<script>
+(function () {
+  'use strict';
+
+  /* =====================================================================
+     Runtime: one clock that can be paused, a task loop, and per-scene
+     cancellation (a cancelled scene's pending promises simply never resolve).
+     ===================================================================== */
+  var NS = 'http://www.w3.org/2000/svg';
+  var reduceMQ = window.matchMedia ? window.matchMedia('(prefers-reduced-motion: reduce)') : null;
+  var REDUCED = !!(reduceMQ && reduceMQ.matches);
+
+  var rt = { clock: 0, last: 0, paused: false, run: 0, tasks: [] };
+
+  function frame(now) {
+    var dt = rt.last ? Math.min(now - rt.last, 100) : 0;
+    rt.last = now;
+    if (!rt.paused) rt.clock += dt;
+    if (rt.tasks.length) {
+      var keep = [];
+      var list = rt.tasks;
+      rt.tasks = [];
+      for (var i = 0; i < list.length; i++) {
+        if (!list[i](rt.clock)) keep.push(list[i]);
+      }
+      rt.tasks = keep.concat(rt.tasks);
+    }
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+
+  function never() { return new Promise(function () {}); }
+  function easeInOut(p) { return p < 0.5 ? 2 * p * p : 1 - Math.pow(-2 * p + 2, 2) / 2; }
+  function lerp(a, b, p) { return a + (b - a) * p; }
+  function nf(n) { return Math.round(n).toLocaleString('es-AR'); }
+
+  function S(tag, attrs, parent) {
+    var e = document.createElementNS(NS, tag);
+    if (attrs) {
+      for (var k in attrs) {
+        if (attrs[k] === undefined || attrs[k] === null) continue;
+        if (k === 'text') e.textContent = attrs[k];
+        else if (k === 'cls') e.setAttribute('class', attrs[k]);
+        else e.setAttribute(k, attrs[k]);
+      }
+    }
+    if (parent) parent.appendChild(e);
+    return e;
+  }
+  function toD(pts) {
+    return pts.map(function (p, i) { return (i ? 'L' : 'M') + p[0] + ' ' + p[1]; }).join(' ');
+  }
+
+  /* Scene context: drawing helpers + timeline helpers bound to one run. */
+  function makeCtx(root, runId, narrEl) {
+    function alive() { return runId === rt.run; }
+    var fx = S('g', { cls: 'fx' }, root);
+
+    var c = {
+      root: root,
+      reduced: REDUCED,
+      alive: alive,
+
+      /* ---- timing ---- */
+      wait: function (ms) {
+        if (!alive()) return never();
+        if (REDUCED || ms <= 0) return Promise.resolve();
+        return new Promise(function (res) {
+          var until = rt.clock + ms;
+          rt.tasks.push(function (t) {
+            if (!alive()) return true;
+            if (t >= until) { res(); return true; }
+            return false;
+          });
+        });
+      },
+      tween: function (ms, fn, ease) {
+        if (!alive()) return never();
+        ease = ease || easeInOut;
+        if (REDUCED || ms <= 0) { fn(1); return Promise.resolve(); }
+        return new Promise(function (res) {
+          var start = rt.clock;
+          fn(0);
+          rt.tasks.push(function (t) {
+            if (!alive()) return true;
+            var p = Math.min(1, (t - start) / ms);
+            fn(ease(p));
+            if (p >= 1) { res(); return true; }
+            return false;
+          });
+        });
+      },
+      all: function (arr) { return Promise.all(arr); },
+
+      /* ---- narration ---- */
+      say: function (text) { if (alive()) narrEl.textContent = text; },
+
+      /* ---- drawing ---- */
+      text: function (x, y, s, o) {
+        o = o || {};
+        var t = S('text', {
+          x: x, y: y, cls: o.cls || 't-sub', 'text-anchor': o.anchor || 'start',
+          'font-size': o.size || 13.5, style: o.style
+        }, o.parent || root);
+        t.textContent = s;
+        return t;
+      },
+      box: function (o) {
+        var g = S('g', { cls: 'node' + (o.cls ? ' ' + o.cls : ''), style: '--k:var(--' + (o.k || 'ext') + ')' }, o.parent || root);
+        var rect = S('rect', { cls: 'bg', x: o.x, y: o.y, width: o.w, height: o.h, rx: o.rx == null ? 10 : o.rx }, g);
+        var subs = o.sub ? [].concat(o.sub) : [];
+        var ts = o.ts || 17, ss = o.ss || 13.5;
+        var left = o.align === 'l';
+        var tx = left ? o.x + 12 : o.x + o.w / 2;
+        var anchor = left ? 'start' : 'middle';
+        var hasTitle = o.title != null;
+        var blockH = (hasTitle ? ts * 1.25 : 0) + subs.length * ss * 1.4;
+        var cy = o.top ? o.y + 10 : o.y + (o.h - blockH) / 2;
+        var title = null;
+        if (hasTitle) {
+          title = S('text', { cls: 't-title' + (o.tmono ? ' mono' : ''), x: tx, y: cy + ts * 0.95, 'text-anchor': anchor, 'font-size': ts }, g);
+          title.textContent = o.title;
+          cy += ts * 1.25;
+        }
+        var subEls = subs.map(function (s) {
+          var t = S('text', { cls: 't-sub' + (o.mono ? ' mono' : ''), x: tx, y: cy + ss * 1.02, 'text-anchor': anchor, 'font-size': ss }, g);
+          t.textContent = s;
+          cy += ss * 1.4;
+          return t;
+        });
+        var n = {
+          g: g, rect: rect, title: title, sub: subEls,
+          x: o.x, y: o.y, w: o.w, h: o.h, cx: o.x + o.w / 2, cy: o.y + o.h / 2, r: o.x + o.w, b: o.y + o.h,
+          on: function (v) { g.classList.toggle('on', v !== false); return n; },
+          dim: function (v) { g.classList.toggle('dim', v !== false); return n; },
+          cls: function (name, v) { g.classList.toggle(name, v !== false); return n; }
+        };
+        return n;
+      },
+      wire: function (pts, o) {
+        o = o || {};
+        return S('path', {
+          d: toD(pts), cls: 'wire' + (o.dash ? ' dash' : '') + (o.bad ? ' bad' : ''),
+          'marker-end': o.noArrow ? null : 'url(#arr)'
+        }, o.parent || root);
+      },
+      token: function (k, label, r, parent) {
+        var g = S('g', { cls: 'tok', style: '--k:var(--' + k + ')' }, parent || fx);
+        S('circle', { r: r || (label ? 11 : 8) }, g);
+        if (label) S('text', { 'text-anchor': 'middle', y: 3.5, 'font-size': 10, text: label }, g);
+        return g;
+      },
+      place: function (el, x, y) { el.setAttribute('transform', 'translate(' + x + ' ' + y + ')'); return el; },
+
+      /* ---- motion ---- */
+      fly: function (path, k, ms, o) {
+        if (!alive()) return never();
+        o = o || {};
+        root.appendChild(fx);
+        var temp = false;
+        if (Array.isArray(path)) { path = S('path', { d: toD(path), fill: 'none', stroke: 'none' }, fx); temp = true; }
+        var L = path.getTotalLength();
+        var tk = c.token(k, o.label, o.r);
+        var end = path.getPointAtLength(L);
+        if (REDUCED) {
+          if (temp) path.remove();
+          if (o.keep) { c.place(tk, end.x, end.y); return Promise.resolve(tk); }
+          tk.remove();
+          return Promise.resolve(null);
+        }
+        return c.tween(ms || 800, function (p) {
+          var pt = path.getPointAtLength(L * p);
+          c.place(tk, pt.x, pt.y);
+        }).then(function () {
+          if (temp) path.remove();
+          if (!o.keep) { tk.remove(); return null; }
+          return tk;
+        });
+      },
+      chain: function (paths, kinds, ms, o) {
+        var p = Promise.resolve();
+        paths.forEach(function (pt, i) {
+          p = p.then(function () { return c.fly(pt, kinds[i], ms, o); });
+        });
+        return p;
+      },
+      hide: function (el) { el.style.opacity = '0'; return el; },
+      fadeIn: function (el, ms) {
+        return c.tween(ms == null ? 350 : ms, function (p) { el.style.opacity = String(p); });
+      },
+      fadeTo: function (el, to, ms) {
+        var from = el.style.opacity === '' ? 1 : parseFloat(el.style.opacity);
+        return c.tween(ms == null ? 350 : ms, function (p) { el.style.opacity = String(lerp(from, to, p)); });
+      },
+      count: function (el, from, to, ms, fmt) {
+        fmt = fmt || nf;
+        return c.tween(ms == null ? 900 : ms, function (p) { el.textContent = fmt(lerp(from, to, p)); });
+      },
+      typeText: function (el, str, msPerChar) {
+        return c.tween(Math.max(150, str.length * (msPerChar || 22)), function (p) {
+          el.textContent = str.slice(0, Math.round(str.length * p));
+        }, function (p) { return p; });
+      },
+      pulse: function (node, ms) {
+        node.on(true);
+        return c.wait(ms || 700).then(function () { node.on(false); });
+      }
+    };
+    return c;
+  }
+
+  function defs(svg) {
+    var d = S('defs', null, svg);
+    var m = S('marker', { id: 'arr', viewBox: '0 0 10 10', refX: 9, refY: 5, markerWidth: 7, markerHeight: 7, orient: 'auto-start-reverse' }, d);
+    S('path', { d: 'M0,0 L10,5 L0,10 z', cls: 'arrowhead' }, m);
+  }
+
+  /* =====================================================================
+     Scenes
+     ===================================================================== */
+  var SCENES = [
+
+  /* ------------------------------------------------------------------ 1 */
+  {
+    title: 'El recorrido completo',
+    text:
+      '<p>Cada vez que el core .NET cambia algo de negocio, deja un <strong>evento de auditoría</strong>. ' +
+      'Este proyecto lo saca de SQL Server y lo lleva a un lakehouse en Iceberg <strong>sin bloquear al core y sin perder ni duplicar eventos</strong>.</p>' +
+      '<p>Mirá cómo viaja un evento por cada eslabón. Los pasos siguientes abren cada caja.</p>' +
+      '<div class="concept"><b>Concepto</b><strong>Lakehouse</strong>: archivos baratos en almacenamiento de objetos (S3) con garantías de base de datos (transacciones, esquema, historia), gracias a un formato de tabla como Iceberg.</div>',
+    codeLabel: 'README §3.7 · de local a AWS solo cambia configuración',
+    code:
+      'spark.sql.catalog.lake.type       glue          # en vez de: rest + uri\n' +
+      'spark.sql.catalog.lake.warehouse  s3://<bucket-lakehouse>/',
+    play: async function (c) {
+      var N = {
+        api: c.box({ x: 20, y: 40, w: 170, h: 100, k: 'oltp', title: 'API .NET 8', sub: ['core transaccional'] }),
+        sql: c.box({ x: 240, y: 30, w: 250, h: 120, k: 'oltp', title: 'SQL Server', sub: ['Accounts / Payments', '+ AuditOutbox'] }),
+        cdc: c.box({ x: 540, y: 40, w: 190, h: 100, k: 'cdc', title: 'CDC', sub: ['log de transacciones', '→ dbo_AuditOutbox_CT'] }),
+        dbz: c.box({ x: 780, y: 40, w: 160, h: 100, k: 'cdc', title: 'Debezium', sub: ['Kafka Connect'] }),
+        kafka: c.box({ x: 600, y: 195, w: 340, h: 130, k: 'kafka', top: true, title: 'Redpanda / Kafka', sub: ['mssql.AuditDb.dbo.AuditOutbox', '3 particiones · retención 7 días'], ss: 13 }),
+        spark: c.box({ x: 300, y: 205, w: 240, h: 110, k: 'spark', title: 'PySpark', sub: ['Structured Streaming', 'micro-batch cada 30 s'] }),
+        bronze: c.box({ x: 20, y: 370, w: 270, h: 95, k: 'iceberg', title: 'Iceberg bronze', sub: ['lake.audit.events_bronze'], mono: true, ss: 13 }),
+        silver: c.box({ x: 345, y: 370, w: 270, h: 95, k: 'dbt', title: 'Silver (dbt)', sub: ['audit_silver.audit_events'], mono: true, ss: 13 }),
+        gold: c.box({ x: 670, y: 370, w: 270, h: 95, k: 'dbt', title: 'Gold (dbt)', sub: ['fct_audit_daily_activity', 'fct_actor_daily_activity'], mono: true, ss: 12.5 })
+      };
+      N.kafka.sub[0].classList.add('mono');
+      for (var p = 0; p < 3; p++) S('rect', { cls: 'lane', x: 625, y: 277 + p * 14, width: 290, height: 9, rx: 3, style: '--k:var(--kafka)' }, N.kafka.g);
+      var cat = c.box({ x: 20, y: 488, w: 520, h: 40, k: 'iceberg', title: 'Catálogo: Iceberg REST (local) = Glue Data Catalog (AWS)', ts: 14 });
+      var sto = c.box({ x: 560, y: 488, w: 380, h: 40, k: 'ext', title: 'Almacenamiento: SeaweedFS (local) = Amazon S3', ts: 14 });
+
+      var w = [
+        c.wire([[190, 90], [240, 90]]),
+        c.wire([[490, 90], [540, 90]]),
+        c.wire([[730, 90], [780, 90]]),
+        c.wire([[860, 140], [860, 195]]),
+        c.wire([[600, 260], [540, 260]]),
+        c.wire([[420, 315], [420, 342], [155, 342], [155, 370]]),
+        c.wire([[290, 417], [345, 417]]),
+        c.wire([[615, 417], [670, 417]])
+      ];
+      var kinds = ['oltp', 'cdc', 'cdc', 'kafka', 'spark', 'iceberg', 'dbt', 'dbt'];
+      var hops = [
+        [N.api, 'Un request de negocio entra a la API .NET 8.'],
+        [N.sql, 'El cambio de negocio y su evento de auditoría se guardan juntos en SQL Server (outbox).'],
+        [N.cdc, 'CDC lee el log de transacciones y copia el insert a la tabla de cambios.'],
+        [N.dbz, 'Debezium lee esa tabla de cambios…'],
+        [N.kafka, '…y publica el evento en el topic de Kafka, que actúa como buffer durable.'],
+        [N.spark, 'Spark lo consume en micro-batches cada 30 s.'],
+        [N.bronze, 'Lo aterriza en Iceberg bronze, sin duplicados (MERGE por event_id).'],
+        [N.silver, 'dbt lo normaliza y conforma en silver: una fila por event_id.'],
+        [N.gold, 'dbt lo agrega por día en gold, listo para consumo.']
+      ];
+      c.say(hops[0][1]);
+      N.api.on();
+      await c.wait(900);
+      for (var i = 1; i < hops.length; i++) {
+        c.say(hops[i][1]);
+        await c.fly(w[i - 1], kinds[i - 1], 750);
+        hops[i - 1][0].on(false);
+        hops[i][0].on();
+        await c.wait(800);
+      }
+      N.gold.on(false);
+      cat.on(); sto.on();
+      c.say('Todas las tablas se registran en un catálogo (Iceberg REST en local = Glue en AWS) y sus archivos viven en S3 (SeaweedFS en local).');
+      await c.wait(2200);
+      cat.on(false); sto.on(false);
+      c.say('En régimen, muchos eventos fluyen a la vez: el core solo escribe en SQL Server, el resto del pipeline trabaja asíncrono.');
+      var runs = [];
+      for (var j = 0; j < 10; j++) {
+        runs.push((function (d) { return c.wait(d * 330).then(function () { return c.chain(w, kinds, 420); }); })(j));
+      }
+      await c.all(runs);
+      c.say('Resumen: API → SQL Server (outbox) → CDC → Debezium → Kafka → Spark → Iceberg bronze → dbt silver → dbt gold.');
+    }
+  },
+
+  /* ------------------------------------------------------------------ 2 */
+  {
+    title: 'Outbox transaccional: negocio y auditoría, juntos',
+    text:
+      '<p>Un <code>POST /api/payments</code> crea el pago y descuenta el saldo. Un <code>SaveChangesInterceptor</code> de EF Core agrega las filas de auditoría a <code>dbo.AuditOutbox</code> <strong>dentro del mismo SaveChanges</strong>: se confirman o se revierten juntas.</p>' +
+      '<p>Si el saldo no alcanza, el dominio corta antes de confirmar: responde 422 y no se guarda nada, ni pago ni evento. La app <strong>nunca</strong> le habla a Kafka.</p>' +
+      '<div class="concept"><b>Concepto</b><strong>Dual-write</strong>: guardar en la base y además publicar en Kafka desde la app. Si una de las dos falla, quedan inconsistentes. Con la outbox hay una sola escritura: la transacción de SQL Server.</div>',
+    codeLabel: 'Endpoints/CoreEndpoints.cs · Infrastructure/AuditOutboxInterceptor.cs',
+    code:
+      'var payment = Payment.Pay(account, req.Amount, clock.GetUtcNow().UtcDateTime);\n' +
+      'db.Payments.Add(payment);\n' +
+      'await db.SaveChangesAsync(ct); // payment + balance + 2 audit events: atomic\n\n' +
+      '// en el interceptor, antes de que EF ejecute el SaveChanges:\n' +
+      'context.Set<AuditOutboxMessage>().AddRange(messages);',
+    play: async function (c) {
+      var client = c.box({ x: 20, y: 70, w: 190, h: 90, k: 'ext', title: 'Cliente', sub: ['POST /api/payments', 'amount: 40'], mono: true, ss: 12.5 });
+      var api = c.box({ x: 255, y: 30, w: 280, h: 260, k: 'oltp', top: true, title: 'API .NET 8' });
+      var steps = ['Payment.Pay(account, 40)', 'account.Debit(40)', 'SaveChangesAsync()', 'AuditOutboxInterceptor'].map(function (s, i) {
+        return c.box({ x: 270, y: 68 + i * 52, w: 250, h: 40, k: 'oltp', title: s, ts: 13.5, tmono: true, align: 'l', rx: 7 });
+      });
+      var sql = c.box({ x: 580, y: 30, w: 360, h: 310, k: 'oltp', top: true, title: 'SQL Server', sub: ['una sola transacción'] });
+      var tx = S('rect', { cls: 'txbox', x: 595, y: 88, width: 330, height: 236, rx: 8, style: '--k:var(--oltp)' }, c.root);
+      var txl = c.text(607, 106, 'BEGIN TRAN', { cls: 't-sub mono', size: 12 });
+      var rowsTxt = ['INSERT Payments (40)', 'UPDATE Accounts (Balance −40)', 'INSERT AuditOutbox · Payment', 'INSERT AuditOutbox · Account'];
+      var rows = rowsTxt.map(function (s, i) {
+        var r = c.box({ x: 607, y: 116 + i * 40, w: 306, h: 32, k: i < 2 ? 'oltp' : 'cdc', title: s, ts: 13, tmono: true, align: 'l', rx: 6 });
+        c.hide(r.g);
+        return r;
+      });
+      var st1 = c.text(760, 296, '', { cls: 't-ok', size: 12.5, anchor: 'middle' });
+      var st2 = c.text(760, 316, '', { cls: 't-bad', size: 12.5, anchor: 'middle' });
+      c.hide(tx); c.hide(txl);
+
+      var kafka = c.box({ x: 255, y: 360, w: 280, h: 70, k: 'kafka', title: 'Kafka', sub: ['la app nunca le habla'] }).dim();
+      c.wire([[395, 290], [395, 360]], { dash: true, bad: true, noArrow: true });
+      var x1 = S('g', null, c.root);
+      S('line', { cls: 'cross', x1: 383, y1: 313, x2: 407, y2: 337 }, x1);
+      S('line', { cls: 'cross', x1: 407, y1: 313, x2: 383, y2: 337 }, x1);
+      c.text(415, 330, 'sin dual-write', { cls: 't-bad', size: 13 });
+
+      c.text(20, 400, 'Filas en dbo.AuditOutbox', { size: 13.5 });
+      var cnt = c.text(20, 445, '0', { cls: 'big', size: 40 });
+      c.text(20, 482, 'Última respuesta HTTP', { size: 13.5 });
+      var resp = c.text(20, 512, '—', { cls: 't-strong', size: 18 });
+      c.text(580, 380, 'Las 2 filas de outbox: una por el Payment creado', { size: 13 });
+      c.text(580, 400, 'y otra por el Account modificado (balance old/new).', { size: 13 });
+
+      var reqPath = [[210, 115], [255, 115]];
+      var respPath = [[255, 145], [210, 145]];
+
+      /* request 1: commit */
+      client.on();
+      c.say('Request 1: POST /api/payments por 40. El cliente llama a la API.');
+      await c.fly(reqPath, 'ext', 600);
+      client.on(false); api.on();
+      for (var i = 0; i < steps.length; i++) {
+        steps[i].on();
+        c.say([
+          'El dominio crea el pago…',
+          '…y descuenta el saldo de la cuenta (hay fondos suficientes).',
+          'SaveChangesAsync: EF Core va a abrir UNA transacción.',
+          'El interceptor ve 2 entidades auditables cambiadas y agrega 2 filas a AuditOutbox en el mismo SaveChanges.'
+        ][i]);
+        await c.wait(1000);
+        steps[i].on(false);
+      }
+      api.on(false); sql.on();
+      await c.all([c.fadeIn(tx), c.fadeIn(txl)]);
+      for (var r = 0; r < rows.length; r++) {
+        await c.fly([[535, 220], [607, 132 + r * 40]], r < 2 ? 'oltp' : 'cdc', 450);
+        await c.fadeIn(rows[r].g, 250);
+      }
+      c.say('COMMIT: las 4 escrituras se confirman juntas. Pago y evento de auditoría no pueden quedar separados.');
+      st1.textContent = 'Request 1 (40): COMMIT ✓ · 4 escrituras juntas';
+      await c.count(cnt, 0, 2, 500);
+      await c.fly(respPath, 'ok', 500);
+      resp.textContent = '201 Created';
+      sql.on(false);
+      await c.wait(1400);
+
+      /* request 2: no commit */
+      client.sub[1].textContent = 'amount: 5000';
+      client.on();
+      c.say('Request 2: POST /api/payments por 5000, más que el saldo disponible.');
+      await c.fly(reqPath, 'ext', 600);
+      client.on(false); api.on();
+      steps[0].on();
+      await c.wait(700);
+      steps[0].on(false);
+      steps[1].cls('bad');
+      steps[1].title.textContent = 'Debit → Insufficient funds.';
+      c.say('Debit lanza DomainException("Insufficient funds.") antes de SaveChanges: nunca se llega a confirmar nada.');
+      await c.wait(1200);
+      steps[2].dim(); steps[3].dim();
+      st2.textContent = 'Request 2 (5000): sin commit · 0 filas · 0 eventos';
+      await c.fly(respPath, 'bad', 500);
+      resp.textContent = '422 Unprocessable Entity';
+      api.on(false);
+      kafka.dim(false);
+      c.say('Pago y evento se confirman o se descartan juntos (acá: 0 eventos). Y la app nunca habla con Kafka: si el pipeline está caído, el core sigue.');
+      await c.wait(1500);
+      kafka.dim();
+    }
+  },
+
+  /* ------------------------------------------------------------------ 3 */
+  {
+    title: 'CDC y LSN: leer el log, no las tablas',
+    text:
+      '<p>SQL Server escribe todo primero en su <strong>log de transacciones</strong>. Con CDC activado solo sobre la outbox, un job del <strong>SQL Server Agent</strong> lee ese log en forma asíncrona y copia cada insert a <code>cdc.dbo_AuditOutbox_CT</code>, con <code>__$operation = 2</code> (insert) y su <code>__$start_lsn</code>.</p>' +
+      '<p>No toma locks sobre las tablas ni agrega latencia al commit.</p>' +
+      '<div class="concept"><b>Concepto</b><strong>LSN</strong> (Log Sequence Number): el “número de línea” del log. Siempre crece y sigue el orden de commit. “Dame todo después del LSN X” no saltea nada; “dame todo después de la hora X” puede perder una transacción lenta que confirmó tarde con una hora vieja (los LSN y horarios del diagrama son ilustrativos).</div>',
+    codeLabel: 'infra/sqlserver/init.sql · docker-compose.yml',
+    code:
+      'EXEC sys.sp_cdc_enable_table\n' +
+      '    @source_schema = N\'dbo\',\n' +
+      '    @source_name = N\'AuditOutbox\',\n' +
+      '    @role_name = NULL,\n' +
+      '    @supports_net_changes = 0;\n\n' +
+      'MSSQL_AGENT_ENABLED: "true" # CDC necesita SQL Server Agent',
+    play: async function (c) {
+      var log = c.box({ x: 20, y: 20, w: 270, h: 250, k: 'oltp', top: true, title: 'Log de transacciones', sub: ['SQL Server escribe acá primero'] });
+      var agent = c.box({ x: 335, y: 100, w: 190, h: 95, k: 'cdc', title: 'SQL Server Agent', sub: ['job de captura', '(asíncrono)'] });
+      var ct = c.box({ x: 570, y: 20, w: 370, h: 250, k: 'cdc', top: true, title: 'cdc.dbo_AuditOutbox_CT', tmono: true, ts: 15 });
+      c.text(590, 76, '__$start_lsn', { cls: 't-sub mono', size: 12 });
+      c.text(720, 76, '__$operation', { cls: 't-sub mono', size: 12 });
+      c.text(845, 76, 'EventId', { cls: 't-sub mono', size: 12 });
+      c.wire([[290, 147], [335, 147]]);
+      c.wire([[525, 147], [570, 147]]);
+      var ids = ['…a1f', '…a20', '…a21', '…a22', '…a23'];
+      var logRows = [], ctRows = [];
+      for (var i = 0; i < 5; i++) {
+        var lr = c.box({ x: 35, y: 78 + i * 37, w: 240, h: 30, k: 'oltp', title: 'LSN ' + (101 + i) + ' · INSERT outbox', ts: 13, tmono: true, align: 'l', rx: 6 });
+        c.hide(lr.g); logRows.push(lr);
+        var g = S('g', null, c.root);
+        S('rect', { x: 585, y: 86 + i * 34, width: 340, height: 28, rx: 6, cls: 'lane', style: '--k:var(--cdc)' }, g);
+        c.text(595, 105 + i * 34, String(101 + i), { cls: 't-strong mono', size: 13, parent: g });
+        c.text(760, 105 + i * 34, '2', { cls: 't-strong mono', size: 13, parent: g, anchor: 'middle' });
+        c.text(845, 105 + i * 34, ids[i], { cls: 't-sub mono', size: 13, parent: g });
+        c.hide(g); ctRows.push(g);
+      }
+
+      c.say('Cada commit en la outbox queda escrito en el log de transacciones, con un LSN que siempre crece.');
+      for (var a = 0; a < 5; a++) {
+        await c.fly([[0, 93 + a * 37], [35, 93 + a * 37]], 'oltp', 300);
+        await c.fadeIn(logRows[a].g, 200);
+      }
+      agent.on();
+      c.say('El job de captura del SQL Server Agent lee el log (no las tablas) y copia cada insert a la tabla de cambios.');
+      for (var b = 0; b < 5; b++) {
+        logRows[b].on();
+        await c.fly([[275, 93 + b * 37], [430, 147], [585, 100 + b * 34]], 'cdc', 650);
+        logRows[b].on(false);
+        await c.fadeIn(ctRows[b], 200);
+        if (b === 0) { c.say('__$operation = 2 significa INSERT. __$start_lsn es el LSN del commit: el orden en que se confirmó.'); await c.wait(1200); }
+      }
+      agent.on(false);
+      await c.wait(600);
+
+      /* timestamp vs LSN */
+      c.text(20, 305, '¿Por qué LSN y no polling por timestamp? (ejemplo ilustrativo)', { cls: 't-strong', size: 15 });
+      var X0 = 130, X1 = 910, T = 2.5;
+      function X(t) { return X0 + (X1 - X0) * t / T; }
+      S('line', { x1: X0, y1: 400, x2: X1, y2: 400, stroke: 'var(--wire)', 'stroke-width': 1.5 }, c.root);
+      for (var tk = 0; tk <= 5; tk++) {
+        S('line', { x1: X(tk * 0.5), y1: 396, x2: X(tk * 0.5), y2: 404, stroke: 'var(--wire)' }, c.root);
+        c.text(X(tk * 0.5), 418, (tk * 0.5).toFixed(1).replace('.', ',') + ' s', { size: 12, anchor: 'middle' });
+      }
+      c.text(20, 342, 'T1 (lenta)', { cls: 't-strong', size: 13.5 });
+      c.text(20, 377, 'T2', { cls: 't-strong', size: 13.5 });
+      var b1 = S('rect', { x: X(0.1), y: 328, width: 0, height: 20, rx: 4, fill: 'var(--oltp)', opacity: .85 }, c.root);
+      var b2 = S('rect', { x: X(1.0), y: 363, width: 0, height: 20, rx: 4, fill: 'var(--oltp)', opacity: .85 }, c.root);
+      var l1 = c.text(X(0.1), 323, 'OccurredAt 0,1 s', { size: 11.5 });
+      var l2 = c.text(X(1.0), 359, 'OccurredAt 1,0 s', { size: 11.5 });
+      var c1 = c.text(X(2.0) + 6, 343, 'commit · LSN 107', { cls: 't-strong', size: 12 });
+      var c2 = c.text(X(1.0) - 6, 378, 'commit · LSN 105 →', { cls: 't-strong', size: 12, anchor: 'end' });
+      var poll = S('line', { x1: X(1.5), y1: 318, x2: X(1.5), y2: 400, stroke: 'var(--bad)', 'stroke-width': 2, 'stroke-dasharray': '4 3' }, c.root);
+      var pollT = c.text(X(1.5), 434, 'poll a 1,5 s', { cls: 't-bad', size: 12, anchor: 'middle' });
+      var now = S('line', { x1: X0, y1: 318, x2: X0, y2: 400, stroke: 'var(--fg)', 'stroke-width': 1 }, c.root);
+      [c1, c2, poll, pollT, l1, l2].forEach(c.hide);
+      c.fadeIn(l1); c.fadeIn(l2);
+      c.say('T1 arranca primero (OccurredAt 0,1 s) pero confirma tarde, a los 2,0 s. T2 arranca a 1,0 s y confirma enseguida.');
+      await c.tween(4200, function (p) {
+        var t = p * T;
+        now.setAttribute('x1', X(t)); now.setAttribute('x2', X(t));
+        b1.setAttribute('width', Math.max(0, X(Math.min(t, 2.0)) - X(0.1)) * (t > 0.1 ? 1 : 0));
+        b2.setAttribute('width', Math.max(0, X(Math.min(t, 1.2)) - X(1.0)) * (t > 1.0 ? 1 : 0));
+        if (t >= 1.2) c2.style.opacity = '1';
+        if (t >= 1.5) { poll.style.opacity = '1'; pollT.style.opacity = '1'; }
+        if (t >= 2.0) c1.style.opacity = '1';
+      }, function (p) { return p; });
+      now.remove();
+
+      var bad = c.box({ x: 20, y: 445, w: 450, h: 88, k: 'bad', cls: 'bad', top: true, align: 'l', title: 'Polling por OccurredAt: se pierde T1', ts: 14.5,
+        sub: ['El poll de 1,5 s ve solo a T2 → marca de agua = 1,0 s.', 'T1 confirma después, con OccurredAt 0,1 s < 1,0 s:', 'la consulta “> 1,0 s” nunca la devuelve.'], ss: 12.5 });
+      var ok = c.box({ x: 490, y: 445, w: 450, h: 88, k: 'ok', cls: 'good', top: true, align: 'l', title: 'Lectura por LSN (orden de commit): nada se pierde', ts: 14.5,
+        sub: ['T2 tiene commit LSN 105; T1 tiene 107.', 'La próxima lectura pide LSN > 105 → incluye a T1.', 'El orden del log es el orden real de confirmación.'], ss: 12.5 });
+      c.hide(bad.g); c.hide(ok.g);
+      c.say('Con timestamp, la marca de agua avanza a 1,0 s y T1 (0,1 s) queda atrás para siempre.');
+      await c.fadeIn(bad.g, 400);
+      await c.wait(1800);
+      c.say('Con LSN, T1 tiene un número mayor que T2 porque confirmó después: la siguiente lectura la incluye. Por eso CDC y Debezium trabajan con LSN.');
+      await c.fadeIn(ok.g, 400);
+    }
+  },
+
+  /* ------------------------------------------------------------------ 4 */
+  {
+    title: 'Debezium publica en Kafka',
+    text:
+      '<p>Debezium (en Kafka Connect) lee la tabla de cambios y publica cada fila como JSON en el topic <code>mssql.AuditDb.dbo.AuditOutbox</code>: <strong>3 particiones, 7 días de retención</strong>.</p>' +
+      '<p>Publica con <code>acks=all</code> y productor idempotente: el broker confirma cada escritura y un reintento no duplica el mensaje. El último LSN procesado queda en el topic <code>_connect_offsets</code>, así que tras un reinicio retoma desde ahí.</p>' +
+      '<div class="concept"><b>Concepto</b><strong>Offset</strong>: la posición de un mensaje dentro de una partición de Kafka (0, 1, 2…). Cada consumidor recuerda hasta qué offset leyó. Leer no borra: Kafka conserva los mensajes durante la retención.</div>',
+    codeLabel: 'infra/debezium/sqlserver-audit-connector.json · docker-compose.yml',
+    code:
+      '"table.include.list": "dbo.AuditOutbox",\n' +
+      '"snapshot.mode": "initial",\n' +
+      '"producer.override.acks": "all",\n' +
+      '"producer.override.enable.idempotence": "true"\n\n' +
+      'OFFSET_STORAGE_TOPIC: _connect_offsets',
+    play: async function (c) {
+      var ct = c.box({ x: 20, y: 30, w: 230, h: 250, k: 'cdc', top: true, title: 'Tabla de cambios', sub: ['cdc.dbo_AuditOutbox_CT'], mono: true, ss: 12 });
+      var rows = [];
+      for (var i = 0; i < 6; i++) {
+        rows.push(c.box({ x: 35, y: 92 + i * 30, w: 200, h: 24, k: 'cdc', title: 'LSN ' + (101 + i) + ' · op 2', ts: 12.5, tmono: true, align: 'l', rx: 5 }));
+      }
+      var dbz = c.box({ x: 300, y: 95, w: 200, h: 120, k: 'cdc', title: 'Debezium', sub: ['conector SQL Server', 'en Kafka Connect'] });
+      var kafka = c.box({ x: 550, y: 30, w: 390, h: 270, k: 'kafka', top: true, title: 'Topic de Kafka (Redpanda)', sub: ['mssql.AuditDb.dbo.AuditOutbox'], mono: true, ss: 12.5 });
+      var laneY = [92, 160, 228];
+      laneY.forEach(function (y, p) {
+        S('rect', { cls: 'lane', x: 595, y: y, width: 330, height: 52, rx: 7, style: '--k:var(--kafka)' }, c.root);
+        c.text(572, y + 31, 'P' + p, { cls: 't-strong', size: 14 });
+      });
+      c.text(745, 318, 'retención 7 días (retention.ms=604800000)', { size: 12.5, anchor: 'middle' });
+      var offs = c.box({ x: 300, y: 262, w: 200, h: 78, k: 'kafka', title: '_connect_offsets', tmono: true, ts: 14, sub: ['último LSN: —'] });
+      var prod = c.box({ x: 20, y: 300, w: 230, h: 60, k: 'cdc', title: 'Productor', ts: 14, sub: ['acks=all · idempotente'] });
+      c.wire([[250, 155], [300, 155]]);
+      var wOut = c.wire([[500, 155], [550, 155]]);
+      c.wire([[400, 215], [400, 262]]);
+
+      c.text(20, 392, 'Mensaje publicado (envelope de Debezium, simplificado)', { cls: 't-strong', size: 13.5 });
+      var jbox = c.box({ x: 20, y: 402, w: 920, h: 118, k: 'ext', cls: 'plain' });
+      var jl = [
+        '{ "op": "c",',
+        '  "after":  { "EventId": "…", "EntityType": "Payment", "Action": "CREATE",',
+        '              "Actor": "…", "SchemaVersion": 1, "Payload": "{…}" },',
+        '  "source": { "commit_lsn": "…" } }'
+      ].map(function (s, k) { return c.text(36, 428 + k * 22, s, { cls: 't-strong mono', size: 13, parent: jbox.g }); });
+      c.hide(jbox.g);
+      var counts = [0, 0, 0];
+
+      for (var m = 0; m < 6; m++) {
+        var fast = m >= 2;
+        var lane = m % 3;
+        rows[m].on();
+        if (m === 0) c.say('Debezium lee la próxima fila de la tabla de cambios (LSN 101).');
+        await c.fly([[235, 104 + m * 30], [300, 155]], 'cdc', fast ? 350 : 650);
+        rows[m].on(false);
+        dbz.on();
+        if (m === 0) { c.say('La convierte en un mensaje JSON con el envelope de Debezium: op, after (la fila) y source (incluye el commit LSN).'); await c.fadeIn(jbox.g, 400); await c.wait(1800); }
+        var slot = counts[lane]++;
+        var tx = 620 + slot * 52, ty = laneY[lane] + 26;
+        if (m === 0) c.say('Lo publica en una de las 3 particiones del topic.');
+        var tok = await c.fly([[500, 155], [560, 155], [tx, ty]], 'kafka', fast ? 400 : 750, { keep: true, label: 'off ' + slot, r: 16 });
+        if (m === 0) { c.say('acks=all: el broker confirma recién cuando la escritura quedó en las réplicas en sincronía. Idempotente: un reintento no duplica.'); }
+        await c.fly([[tx, ty], [500, 170]], 'ok', fast ? 300 : 600, { r: 5 });
+        await c.fly([[400, 215], [400, 262]], 'kafka', fast ? 250 : 450, { r: 6 });
+        offs.sub[0].textContent = 'último LSN: ' + (101 + m);
+        dbz.on(false);
+        if (m === 0) { c.say('Con el ack, Debezium registra en _connect_offsets el último LSN publicado.'); await c.wait(1500); }
+        if (m === 1) c.say('Y así con cada fila, siempre en orden de LSN.');
+      }
+      await c.wait(600);
+      c.say('Si Debezium se reinicia, lee _connect_offsets y retoma después del último LSN publicado.');
+      dbz.dim();
+      await c.wait(900);
+      dbz.dim(false); dbz.on(); offs.on();
+      await c.wait(1300);
+      dbz.on(false); offs.on(false);
+      c.say('Kafka retiene los mensajes 7 días: si Spark está caído, el evento espera en el topic.');
+      kafka.on();
+      await c.wait(1500);
+      kafka.on(false);
+    }
+  },
+
+  /* ------------------------------------------------------------------ 5 */
+  {
+    title: 'Spark: micro-batches idempotentes',
+    text:
+      '<p>PySpark Structured Streaming arranca un micro-batch <strong>cada 30 s</strong>: lee los offsets que siguen al <strong>checkpoint</strong> (hasta 50.000 por trigger), parsea el JSON con funciones nativas y escribe en bronze con un <code>MERGE</code> que solo inserta lo que no existe por <code>event_id</code>. Recién después confirma el checkpoint.</p>' +
+      '<p>Si Spark muere entre el MERGE y el checkpoint, al reiniciar repite el batch… y el MERGE ignora los repetidos.</p>' +
+      '<div class="concept"><b>Concepto</b><strong>Checkpoint</strong>: dónde Spark anota hasta qué offsets procesó. <strong>At-least-once → effectively-once</strong>: el streaming puede entregar un batch dos veces, pero la escritura idempotente deja la tabla igual que si hubiera llegado una sola vez.</div>',
+    codeLabel: 'spark/jobs/ingest_audit_events.py',
+    code:
+      '.option("failOnDataLoss", "true")\n' +
+      '.option("maxOffsetsPerTrigger", MAX_OFFSETS_PER_TRIGGER)   # 50000\n' +
+      '...\n' +
+      'MERGE INTO {BRONZE_TABLE} t\n' +
+      'USING {view} s\n' +
+      'ON  t.event_id = s.event_id\n' +
+      'AND t.event_ts BETWEEN TIMESTAMP \'{min_ts}\' AND TIMESTAMP \'{max_ts}\'\n' +
+      'WHEN NOT MATCHED THEN INSERT *',
+    play: async function (c) {
+      var kafka = c.box({ x: 20, y: 30, w: 250, h: 300, k: 'kafka', top: true, title: 'Topic', sub: ['3 particiones'] });
+      var laneY = [88, 168, 248];
+      laneY.forEach(function (y, p) {
+        S('rect', { cls: 'lane', x: 55, y: y, width: 200, height: 56, rx: 7, style: '--k:var(--kafka)' }, c.root);
+        c.text(30, y + 33, 'P' + p, { cls: 't-strong', size: 13.5 });
+      });
+      var msgs = [];
+      for (var i = 0; i < 12; i++) {
+        var lane = i % 3, slot = Math.floor(i / 3);
+        var t = c.token('kafka', 'e' + (i + 1), 15, c.root);
+        var pos = [82 + slot * 48, laneY[lane] + 28];
+        c.place(t, pos[0], pos[1]);
+        msgs.push({ el: t, pos: pos });
+      }
+      var spark = c.box({ x: 310, y: 30, w: 340, h: 300, k: 'spark', top: true, title: 'Spark Structured Streaming', ts: 16 });
+      var stepTxt = ['1 · Leer offsets después del checkpoint', '2 · Parsear JSON (from_json, sin UDFs)', '3 · MERGE por event_id (solo INSERT)', '4 · Confirmar checkpoint'];
+      var steps = stepTxt.map(function (s, k) {
+        return c.box({ x: 325, y: 70 + k * 63, w: 310, h: 48, k: 'spark', title: s, ts: 13.5, align: 'l', rx: 7 });
+      });
+      S('circle', { cls: 'ring-bg', cx: 622, cy: 50, r: 11 }, c.root);
+      var ring = S('circle', { cls: 'ring', cx: 622, cy: 50, r: 11, style: '--k:var(--spark)', 'stroke-dasharray': 69.1, 'stroke-dashoffset': 69.1, transform: 'rotate(-90 622 50)' }, c.root);
+      c.text(460, 352, 'trigger cada 30 s · máx. 50.000 offsets por trigger', { size: 12.5, anchor: 'middle' });
+      var ck = c.box({ x: 310, y: 368, w: 340, h: 80, k: 'spark', title: 'Checkpoint', sub: ['último batch confirmado: ninguno'] });
+      var bronze = c.box({ x: 700, y: 30, w: 240, h: 300, k: 'iceberg', top: true, title: 'Iceberg bronze', sub: ['lake.audit.events_bronze'], mono: true, ss: 12 });
+      c.text(712, 366, 'filas:', { size: 14 });
+      var rowsT = c.text(760, 366, '0', { cls: 'big', size: 22 });
+      c.text(712, 396, 'duplicados:', { size: 14 });
+      var dupT = c.text(795, 396, '0', { cls: 't-ok', size: 20 });
+      c.wire([[270, 180], [310, 180]]);
+      c.wire([[650, 180], [700, 180]]);
+      c.wire([[628, 330], [628, 368]], { noArrow: true });
+      var crash = S('g', null, c.root);
+      S('line', { cls: 'cross', x1: 340, y1: 70, x2: 620, y2: 310 }, crash);
+      S('line', { cls: 'cross', x1: 620, y1: 70, x2: 340, y2: 310 }, crash);
+      var cb = c.box({ x: 385, y: 160, w: 190, h: 44, k: 'bad', cls: 'bad', title: 'Spark se cae', ts: 15, parent: crash });
+      c.hide(crash);
+      var landed = {};
+      var total = 0;
+      function slotXY(n) { var col = (n - 1) % 3, row = Math.floor((n - 1) / 3); return [752 + col * 66, 102 + row * 52]; }
+
+      async function batch(n, ids, opt) {
+        ring.setAttribute('stroke-dashoffset', 69.1);
+        c.say('Micro-batch #' + n + ': pasan 30 s (acá acelerado) y arranca el trigger.');
+        await c.tween(1300, function (p) { ring.setAttribute('stroke-dashoffset', String(69.1 * (1 - p))); });
+        steps[0].on();
+        c.say(opt.replay ? 'Relee desde el último checkpoint confirmado: vuelven a llegar e7…e12.' : 'Lee los offsets que siguen al checkpoint: ' + ids.map(function (x) { return 'e' + x; }).join(', ') + '.');
+        await c.all(ids.map(function (id, k) {
+          return c.wait(k * 120).then(function () {
+            msgs[id - 1].el.classList.add('ghost');
+            return c.fly([msgs[id - 1].pos, [480, 95]], 'kafka', 650, { label: 'e' + id, r: 11 });
+          });
+        }));
+        steps[0].on(false); steps[1].on();
+        c.say('Parsea el envelope JSON con from_json (esquema explícito, sin UDFs de Python). Descarta los deletes de la outbox.');
+        await c.wait(1100);
+        steps[1].on(false); steps[2].on();
+        c.say(opt.replay ? 'MERGE … WHEN NOT MATCHED THEN INSERT: e7…e12 ya existen, así que no se inserta nada.' : 'MERGE por event_id: solo inserta los que no existen.');
+        await c.all(ids.map(function (id, k) {
+          return c.wait(k * 120).then(function () {
+            var xy = slotXY(id);
+            return c.fly([[480, 220], [650, 180], xy], 'spark', 650, { label: 'e' + id, r: 11 }).then(function () {
+              if (!landed[id]) {
+                landed[id] = true;
+                c.place(c.token('iceberg', 'e' + id, 13, c.root), xy[0], xy[1]);
+                total++;
+                rowsT.textContent = nf(total);
+              }
+            });
+          });
+        }));
+        steps[2].on(false);
+        if (opt.crash) return;
+        steps[3].on();
+        c.say('Recién ahora confirma el checkpoint: batch #' + n + ' hecho.');
+        await c.fly([[628, 330], [628, 375]], 'spark', 400, { r: 6 });
+        ck.sub[0].textContent = 'último batch confirmado: #' + n + ' (hasta e' + ids[ids.length - 1] + ')';
+        ck.on();
+        await c.wait(900);
+        ck.on(false); steps[3].on(false);
+      }
+
+      await batch(1, [1, 2, 3, 4, 5, 6], {});
+      await batch(2, [7, 8, 9, 10, 11, 12], { crash: true });
+      c.say('¡Falla! Spark muere después del MERGE pero ANTES de confirmar el checkpoint. El checkpoint sigue diciendo batch #1.');
+      spark.cls('bad');
+      await c.fadeIn(crash, 300);
+      ck.on();
+      await c.wait(2000);
+      ck.on(false);
+      c.say('restart: unless-stopped → el contenedor reinicia y Spark retoma desde el checkpoint.');
+      await c.fadeTo(crash, 0, 400);
+      spark.cls('bad', false);
+      for (var g = 7; g <= 12; g++) msgs[g - 1].el.classList.remove('ghost');
+      await c.wait(600);
+      await batch(2, [7, 8, 9, 10, 11, 12], { replay: true });
+      bronze.on();
+      c.say('Resultado: 12 filas, 0 duplicados. El reproceso no cambió la tabla (medido en el README: kill durante la carga, 17.000 = 17.000, 0 duplicados).');
+      await c.wait(1200);
+      bronze.on(false);
+      dupT.textContent = '0';
+    }
+  },
+
+  /* ------------------------------------------------------------------ 6 */
+  {
+    title: 'Iceberg: tablas ACID sobre archivos',
+    text:
+      '<p>Bronze está particionada por <code>days(event_ts)</code> con <em>hidden partitioning</em>: filtrás por <code>event_ts</code> e Iceberg poda solo. Cada commit crea un <strong>snapshot</strong>: los lectores ven el anterior o el nuevo, nunca uno a medias, y se puede hacer time travel.</p>' +
+      '<p>Un commit cada 30 s deja archivos chicos. El mantenimiento los compacta (medido: <strong>3 archivos → 1</strong> en la partición del día), expira snapshots y borra huérfanos.</p>' +
+      '<div class="concept"><b>Concepto</b><strong>Snapshot</strong>: foto inmutable de qué archivos forman la tabla en un momento. El catálogo apunta a la metadata actual; un commit es mover ese puntero de forma atómica.</div>',
+    codeLabel: 'spark/jobs/lake_common.py · spark/jobs/maintenance.py',
+    code:
+      'PARTITIONED BY (days(event_ts))\n\n' +
+      'CALL lake.system.rewrite_data_files(\n' +
+      '    table    => \'{TABLE_IDENT}\',\n' +
+      '    strategy => \'sort\', ...)\n' +
+      'CALL lake.system.rewrite_manifests(\'{TABLE_IDENT}\')\n' +
+      'CALL lake.system.expire_snapshots(\n' +
+      '    older_than  => ..., retain_last => {SNAPSHOT_RETAIN_LAST})\n' +
+      'CALL lake.system.remove_orphan_files(\n' +
+      '    table => \'{TABLE_IDENT}\', prefix_listing => true)',
+    play: async function (c) {
+      var cat = c.box({ x: 20, y: 25, w: 260, h: 80, k: 'iceberg', title: 'Catálogo', sub: ['Iceberg REST local = Glue en AWS'] });
+      c.text(20, 150, 'Snapshots (cada commit = uno nuevo)', { cls: 't-strong', size: 14 });
+      var oldPill = c.box({ x: 20, y: 162, w: 120, h: 36, k: 'iceberg', title: 'viejos (>24 h)', ts: 12.5, rx: 18 });
+      var pills = [];
+      function addPill(n) {
+        var p = c.box({ x: 150 + (n - 1) * 52, y: 162, w: 46, h: 36, k: 'iceberg', title: 'S' + n, ts: 13.5, rx: 18 });
+        pills.push(p);
+        return p;
+      }
+      addPill(1); addPill(2);
+      var ptr = c.text(0, 220, '▲ actual', { cls: 't-k', size: 12.5, anchor: 'middle', style: '--k:var(--iceberg)' });
+      function ptrAt(n) { return 150 + (n - 1) * 52 + 23; }
+      ptr.setAttribute('x', ptrAt(2));
+      async function movePtr(n) {
+        var from = parseFloat(ptr.getAttribute('x')), to = ptrAt(n);
+        await c.tween(350, function (p) { ptr.setAttribute('x', lerp(from, to, p)); });
+      }
+      c.text(20, 248, 'Los lectores ven un snapshot completo: el anterior o el nuevo.', { size: 12.5 });
+
+      var tbl = c.box({ x: 500, y: 20, w: 440, h: 240, k: 'iceberg', top: true, title: 'lake.audit.events_bronze', tmono: true, ts: 15, sub: ['PARTITIONED BY (days(event_ts))'], mono: true, ss: 12 });
+      var laneA = S('g', null, c.root), laneB = S('g', null, c.root);
+      S('rect', { cls: 'lane', x: 515, y: 74, width: 410, height: 66, rx: 7, style: '--k:var(--iceberg)' }, laneA);
+      c.text(527, 112, 'día anterior', { cls: 't-strong', size: 12.5, parent: laneA });
+      var bigA = S('rect', { cls: 'file', x: 620, y: 89, width: 152, height: 36, rx: 4, style: '--k:var(--iceberg)' }, laneA);
+      c.text(696, 112, '1 archivo', { size: 12, anchor: 'middle', parent: laneA });
+      S('rect', { cls: 'lane', x: 515, y: 150, width: 410, height: 90, rx: 7, style: '--k:var(--iceberg)' }, laneB);
+      c.text(527, 190, 'hoy', { cls: 't-strong', size: 12.5, parent: laneB });
+      var orphan = S('g', null, laneB);
+      S('rect', { cls: 'file orphan', x: 860, y: 170, width: 50, height: 36, rx: 4, style: '--k:var(--warn)' }, orphan);
+      c.text(885, 225, 'huérfano', { cls: 't-warn', size: 11, anchor: 'middle', parent: orphan });
+      var smalls = [];
+      var filesT = c.text(527, 232, '', { size: 12, parent: laneB });
+
+      var chips = [
+        ['rewrite_data_files', '3 archivos → 1 (medido)'],
+        ['rewrite_manifests', 'planning rápido'],
+        ['expire_snapshots', '24 h · al menos 10'],
+        ['remove_orphan_files', 'margen de 3 días']
+      ].map(function (d, k) {
+        return c.box({ x: 20 + k * 233, y: 300, w: 220, h: 58, k: 'spark', title: d[0], tmono: true, ts: 13.5, sub: [d[1]], ss: 12.5 });
+      });
+      c.text(20, 290, 'Mantenimiento (maintenance.py, diario en producción)', { cls: 't-strong', size: 13.5 });
+
+      var q = c.box({ x: 20, y: 380, w: 455, h: 145, k: 'iceberg', top: true, align: 'l', title: 'Hidden partitioning', ts: 15,
+        sub: ['Filtrás por la columna de negocio, sin conocer una “dt”:', 'WHERE event_ts >= current_date', '→ Iceberg lee solo la partición de hoy.', 'Orden de escritura: entity_id, event_ts.'], ss: 13 });
+      q.sub[1].classList.add('mono');
+      var warn = c.box({ x: 490, y: 380, w: 450, h: 145, k: 'bad', cls: 'bad', top: true, align: 'l', title: '⚠ Nunca S3 Lifecycle sobre prefijos de tablas', ts: 15,
+        sub: ['Borraría archivos que la metadata todavía', 'referencia y corrompería la tabla.', 'La expiración se hace siempre por Iceberg', '(DELETE por partición + expire_snapshots).'], ss: 13 });
+      c.hide(q.g); c.hide(warn.g);
+
+      c.say('Cada micro-batch de Spark es un commit atómico: agrega un archivo y crea un snapshot nuevo.');
+      for (var i = 0; i < 3; i++) {
+        var fx = 620 + i * 54;
+        var f = S('rect', { cls: 'file', x: fx, y: 170, width: 44, height: 36, rx: 4, style: '--k:var(--spark)' }, laneB);
+        c.hide(f);
+        await c.fly([[fx + 22, 0], [fx + 22, 188]], 'spark', 550);
+        await c.fadeIn(f, 200);
+        smalls.push(f);
+        filesT.textContent = 'archivos: ' + (i + 1);
+        var p = addPill(3 + i);
+        c.hide(p.g);
+        await c.fadeIn(p.g, 250);
+        cat.on();
+        await movePtr(3 + i);
+        cat.on(false);
+        c.say('Commit ' + (i + 1) + ' → snapshot S' + (3 + i) + '. El catálogo mueve el puntero de forma atómica.');
+        await c.wait(700);
+      }
+      c.say('Hidden partitioning: la consulta filtra por event_ts y la partición del día anterior ni se lee.');
+      await c.fadeIn(q.g, 350);
+      laneA.style.opacity = '.3';
+      await c.wait(2000);
+      laneA.style.opacity = '';
+
+      chips[0].on();
+      c.say('Streaming = muchos archivos chicos. rewrite_data_files los compacta (medido: 3 archivos pasaron a 1).');
+      await c.tween(900, function (pp) {
+        smalls.forEach(function (s, k) { s.setAttribute('x', lerp(620 + k * 54, 620 + k * 36, pp)); });
+      });
+      smalls.forEach(function (s) { s.remove(); });
+      var merged = S('rect', { cls: 'file', x: 620, y: 170, width: 152, height: 36, rx: 4, style: '--k:var(--iceberg)' }, laneB);
+      c.text(696, 193, '1 archivo (compactado)', { size: 12, anchor: 'middle', parent: laneB });
+      filesT.textContent = 'archivos: 1';
+      var p6 = addPill(6);
+      c.hide(p6.g);
+      await c.fadeIn(p6.g, 250);
+      await movePtr(6);
+      await c.wait(600);
+      chips[0].on(false); chips[1].on();
+      c.say('rewrite_manifests reorganiza la metadata para que planificar consultas siga siendo rápido.');
+      await c.wait(1300);
+      chips[1].on(false); chips[2].on();
+      c.say('expire_snapshots borra snapshots de más de 24 h (conservando siempre los últimos 10): acota el time travel y libera espacio.');
+      await c.fadeTo(oldPill.g, 0.12, 700);
+      await c.wait(700);
+      chips[2].on(false); chips[3].on();
+      c.say('remove_orphan_files elimina archivos que ningún snapshot referencia, con margen de 3 días para no tocar commits en curso.');
+      await c.fadeTo(orphan, 0, 700);
+      await c.wait(600);
+      chips[3].on(false);
+      c.say('Y una advertencia de diseño: nunca expirar datos con S3 Lifecycle sobre prefijos de tablas Iceberg.');
+      await c.fadeIn(warn.g, 400);
+      warn.on();
+      await c.wait(1400);
+      warn.on(false);
+      merged.setAttribute('x', 620);
+      void bigA;
+    }
+  },
+
+  /* ------------------------------------------------------------------ 7 */
+  {
+    title: 'dbt: de bronze a silver y gold',
+    text:
+      '<p>dbt modela con SQL versionado y testeado: <code>stg_audit__events</code> (vista que parsea el payload según <code>schema_version</code>) → <code>audit_events</code> (silver incremental, una fila por <code>event_id</code>) → agregados diarios en gold.</p>' +
+      '<p>El incremental “de manual” reescribía la partición completa: <strong>19.500 filas para agregar 2.500</strong>. Con anti-join previo + merge-on-read, una corrida agregó <strong>1.500 filas en 1 archivo nuevo, sin reescribir ninguno</strong>. Todo con 22 tests y freshness de la fuente.</p>' +
+      '<div class="concept"><b>Concepto</b><strong>Copy-on-write vs merge-on-read</strong>: en copy-on-write, tocar una fila obliga a reescribir su archivo entero. En merge-on-read se agregan archivos nuevos y la lectura los combina. Para una tabla que solo recibe inserts, lo segundo evita amplificación de escritura.</div>',
+    codeLabel: 'dbt/audit_lakehouse/models/silver/audit_events.sql',
+    code:
+      'incremental_strategy=\'merge\',\n' +
+      'unique_key=\'event_id\',\n' +
+      'partition_by=[\'days(event_ts)\'],\n' +
+      'tblproperties={ ... \'write.merge.mode\': \'merge-on-read\', ... }\n' +
+      '...\n' +
+      'from source s\n' +
+      '{% if is_incremental() %}\n' +
+      'left anti join already_loaded a\n' +
+      '    on a.event_id = s.event_id\n' +
+      '{% endif %}',
+    play: async function (c) {
+      var src = c.box({ x: 20, y: 40, w: 180, h: 95, k: 'iceberg', title: 'bronze', sub: ['source de dbt', 'freshness 30 min / 2 h'], ss: 12.5 });
+      var stg = c.box({ x: 238, y: 40, w: 214, h: 95, k: 'dbt', title: 'stg_audit__events', tmono: true, ts: 14, sub: ['vista', 'parsea por schema_version'], ss: 12.5 });
+      var sil = c.box({ x: 490, y: 40, w: 200, h: 95, k: 'dbt', title: 'audit_events', tmono: true, ts: 14, sub: ['silver · incremental', 'merge-on-read'], ss: 12.5 });
+      var g1 = c.box({ x: 728, y: 25, w: 212, h: 56, k: 'dbt', title: 'fct_audit_daily_activity', tmono: true, ts: 12.5, sub: ['gold · por entidad/acción'], ss: 11.5 });
+      var g2 = c.box({ x: 728, y: 95, w: 212, h: 56, k: 'dbt', title: 'fct_actor_daily_activity', tmono: true, ts: 12.5, sub: ['gold · por actor'], ss: 11.5 });
+      var w1 = c.wire([[200, 87], [238, 87]]);
+      var w2 = c.wire([[452, 87], [490, 87]]);
+      var w3 = c.wire([[690, 75], [728, 53]]);
+      var w4 = c.wire([[690, 100], [728, 123]]);
+
+      c.say('dbt lee bronze como source y chequea su frescura (warn a 30 min, error a 2 h).');
+      src.on(); await c.wait(1100); src.on(false);
+      await c.fly(w1, 'dbt', 600);
+      stg.on();
+      c.say('Staging: una vista que tipa, normaliza y parsea el payload según schema_version (sin reglas de negocio).');
+      await c.wait(1500); stg.on(false);
+      await c.fly(w2, 'dbt', 600);
+      sil.on();
+      c.say('Silver: tabla incremental, una fila por event_id. Solo procesa lo nuevo (con una ventana de lookback).');
+      await c.wait(1500); sil.on(false);
+      await c.all([c.fly(w3, 'dbt', 600), c.fly(w4, 'dbt', 600)]);
+      g1.on(); g2.on();
+      c.say('Gold: actividad diaria por entidad/acción y por actor. Recalcula solo los días tocados.');
+      await c.wait(1400); g1.on(false); g2.on(false);
+
+      c.text(20, 180, 'Agregar filas a silver sin reescribir archivos (medido)', { cls: 't-strong', size: 15 });
+      var left = c.box({ x: 20, y: 192, w: 450, h: 205, k: 'bad', cls: 'bad', top: true, align: 'l', title: 'Antes: MERGE copy-on-write', ts: 15 });
+      var right = c.box({ x: 490, y: 192, w: 450, h: 205, k: 'ok', cls: 'good', top: true, align: 'l', title: 'Después: anti-join + merge-on-read', ts: 15 });
+      /* left */
+      S('rect', { cls: 'bar-old', x: 38, y: 236, width: 330, height: 40, rx: 4, style: '--k:var(--dbt)' }, c.root);
+      c.text(203, 261, '19.500 filas existentes (partición del día)', { cls: 't-strong', size: 12.5, anchor: 'middle' });
+      var newL = S('rect', { cls: 'file', x: 374, y: 236, width: 76, height: 40, rx: 4, style: '--k:var(--ok)' }, c.root);
+      var newLT = c.text(412, 261, '+2.500', { cls: 't-strong', size: 12.5, anchor: 'middle' });
+      var ov = S('rect', { cls: 'overlay-bad', x: 38, y: 236, width: 0, height: 40, rx: 4 }, c.root);
+      c.text(38, 304, 'El MERGE reescribió la partición del día entera:', { size: 13 });
+      c.text(38, 345, 'filas reescritas:', { size: 13.5 });
+      var rwL = c.text(150, 347, '0', { cls: 't-bad', size: 22 });
+      c.text(38, 380, 'para agregar 2.500 filas nuevas', { size: 13 });
+      /* right */
+      var olds = [0, 1, 2].map(function (k) {
+        var r = S('rect', { cls: 'file gray', x: 508 + k * 92, y: 236, width: 84, height: 40, rx: 4 }, c.root);
+        c.text(550 + k * 92, 261, 'archivo', { size: 12, anchor: 'middle' });
+        return r;
+      });
+      var newR = S('rect', { cls: 'file', x: 790, y: 236, width: 132, height: 40, rx: 4, style: '--k:var(--ok)' }, c.root);
+      var newRT = c.text(856, 261, '+1.500 filas', { cls: 't-strong', size: 12.5, anchor: 'middle' });
+      c.text(508, 304, 'El anti-join descarta los event_id ya cargados;', { size: 13 });
+      c.text(508, 322, 'el MERGE solo ve filas nuevas y agrega un archivo.', { size: 13 });
+      c.text(508, 345, 'archivos reescritos:', { size: 13.5 });
+      var rwR = c.text(645, 347, '—', { cls: 't-ok', size: 22 });
+      c.text(508, 380, 'archivos nuevos: 1 · filas agregadas: 1.500', { size: 13 });
+      [newL, newLT, newR, newRT].forEach(c.hide);
+      void olds;
+
+      c.say('Antes: el incremental “típico” (merge por unique_key, copy-on-write) agregaba 2.500 filas…');
+      await c.fadeIn(newL); c.fadeIn(newLT);
+      c.say('…pero reescribía la partición del día completa: 19.500 filas. Pasaba los tests, pero el costo físico crecía con la partición.');
+      await c.all([
+        c.tween(1600, function (p) { ov.setAttribute('width', 412 * p); }),
+        c.count(rwL, 0, 19500, 1600)
+      ]);
+      await c.wait(900);
+      c.say('Después: anti-join contra lo ya cargado + merge-on-read. Una corrida incremental agregó 1.500 filas en 1 archivo nuevo y no reescribió ninguno.');
+      left.dim();
+      await c.all([c.fadeIn(newR, 500), c.fadeIn(newRT, 500)]);
+      rwR.textContent = '0';
+      right.on();
+      await c.wait(1400);
+      right.on(false); left.dim(false);
+
+      c.text(20, 430, 'dbt build: 22 tests + freshness de la fuente', { cls: 't-strong', size: 14 });
+      var sqs = [];
+      for (var i = 0; i < 22; i++) sqs.push(S('rect', { cls: 'sq', x: 20 + i * 29, y: 445, width: 23, height: 23, rx: 4 }, c.root));
+      var pass = c.text(670, 465, '', { cls: 't-ok', size: 18 });
+      c.text(20, 500, 'unique y not_null de event_id · accepted_values · assert_bronze_fully_reconciled ·', { size: 12.5 });
+      c.text(20, 518, 'assert_gold_matches_silver (los agregados cuadran con el detalle)', { size: 12.5 });
+      c.say('Los tests corren en cada build: unicidad, nulos, valores aceptados y reconciliación entre capas.');
+      var done = 0;
+      await c.tween(1800, function (p) {
+        var n = Math.round(22 * p);
+        for (; done < n; done++) sqs[done].classList.add('pass');
+        pass.textContent = 'PASS=' + n;
+      }, function (p) { return p; });
+      pass.textContent = 'PASS=22 WARN=0 ERROR=0';
+    }
+  },
+
+  /* ------------------------------------------------------------------ 8 */
+  {
+    title: 'Retención OLTP: SQL Server queda chico',
+    text:
+      '<p><code>OutboxRetentionService</code> corre en segundo plano y borra de la outbox lo que salió de la ventana caliente (24 h por defecto, 5 min en la PoC) en <strong>lotes de 4.000 filas</strong>: por debajo del umbral de ~5.000 locks donde SQL Server escalaría a un lock de tabla.</p>' +
+      '<p>Solo borra filas que CDC <strong>ya capturó</strong> (<code>EXISTS</code> en la tabla de cambios). Medido: purgó 21.000; SQL Server quedó con 5.733 y el lake conserva 26.733.</p>' +
+      '<div class="concept"><b>Concepto</b><strong>Lock escalation</strong>: cuando una sentencia acumula demasiados locks de fila o página, SQL Server los cambia por un lock de toda la tabla y bloquea al resto. Lotes chicos y transacciones cortas lo evitan.</div>',
+    codeLabel: 'app/src/Makers.Audit.Api/Infrastructure/OutboxRetentionService.cs',
+    code:
+      'DELETE TOP (@p0) o\n' +
+      'FROM dbo.AuditOutbox AS o\n' +
+      'WHERE o.OccurredAt < @p1\n' +
+      '  AND EXISTS (\n' +
+      '      SELECT 1 FROM cdc.dbo_AuditOutbox_CT AS ct\n' +
+      '      WHERE ct.EventId = o.EventId AND ct.[__$operation] = 2);\n\n' +
+      'public int BatchSize { get; set; } = 4000;',
+    play: async function (c) {
+      var ob = c.box({ x: 20, y: 20, w: 600, h: 340, k: 'oltp', top: true, title: 'dbo.AuditOutbox', tmono: true, ts: 15 });
+      S('rect', { cls: 'zone', x: 370, y: 60, width: 236, height: 262, rx: 8 }, c.root);
+      c.text(488, 78, 'ventana caliente', { cls: 't-warn', size: 12.5, anchor: 'middle' });
+      c.text(488, 344, '24 h por defecto · 5 min en la PoC', { size: 12, anchor: 'middle' });
+      c.text(190, 344, '← más viejas: candidatas a purgar', { size: 12, anchor: 'middle' });
+      var cells = [];
+      for (var col = 0; col < 10; col++) {
+        cells.push([]);
+        for (var row = 0; row < 6; row++) {
+          var g = S('g', null, c.root);
+          var unc = (col === 5 && row === 3);
+          S('rect', { x: 36 + col * 57, y: 90 + row * 38, width: 47, height: 30, rx: 5, cls: unc ? 'file orphan' : 'file', style: '--k:var(' + (unc ? '--warn' : '--oltp') + ')' }, g);
+          c.text(59.5 + col * 57, 110 + row * 38, unc ? '…' : '✓', { cls: unc ? 't-warn' : 't-strong', size: 13, anchor: 'middle', parent: g });
+          cells[col].push({ g: g, unc: unc });
+        }
+      }
+      var svc = c.box({ x: 660, y: 20, w: 280, h: 100, k: 'oltp', title: 'OutboxRetentionService', ts: 15, sub: ['BackgroundService', 'DELETE TOP (4000) por lote'] });
+      var lk = c.box({ x: 660, y: 140, w: 280, h: 220, k: 'ext', cls: 'plain', top: true, title: 'Locks de un lote', ts: 15 });
+      S('rect', { cls: 'meter-bg', x: 680, y: 215, width: 240, height: 30, rx: 5 }, c.root);
+      var meter = S('rect', { cls: 'meter', x: 680, y: 215, width: 0, height: 30, rx: 5 }, c.root);
+      var tx = 680 + 240 * 5000 / 6000;
+      S('line', { cls: 'thresh', x1: tx, y1: 200, x2: tx, y2: 260 }, c.root);
+      c.text(tx, 194, '~5.000', { cls: 't-bad', size: 12.5, anchor: 'middle' });
+      c.text(680, 280, 'por encima: lock de tabla completa', { size: 12 });
+      var lkT = c.text(680, 312, 'locks: 0', { cls: 't-strong', size: 15 });
+      c.text(680, 340, 'lote de 4.000 → sin escalar', { cls: 't-ok', size: 12.5 });
+      void lk;
+
+      var tiles = [['Purgadas de SQL Server', 0], ['Quedan en SQL Server', 26733], ['Conservadas en el lake', 26733]].map(function (d, k) {
+        var b = c.box({ x: 20 + k * 315, y: 385, w: 290, h: 100, k: k === 2 ? 'iceberg' : 'oltp', top: true, title: d[0], ts: 14 });
+        var v = c.text(165 + k * 315, 462, nf(d[1]), { cls: 'big', size: 32, anchor: 'middle' });
+        return { b: b, v: v };
+      });
+      var eq = c.text(480, 520, '21.000 purgadas + 5.733 en SQL Server = 26.733 en el lake (medido)', { cls: 't-strong', size: 15, anchor: 'middle' });
+      c.hide(eq);
+
+      c.say('Cada tick, el servicio busca filas fuera de la ventana caliente que CDC ya haya capturado (✓).');
+      svc.on();
+      await c.wait(1300);
+      var purged = 0, inSql = 26733;
+      for (var b = 0; b < 6; b++) {
+        var n = b < 5 ? 4000 : 1000;
+        c.say('Lote ' + (b + 1) + ': DELETE TOP (4000)… ' + (b < 5 ? 'borra 4.000 filas en una transacción corta.' : 'borra 1.000: como el lote vino incompleto, el ciclo termina.'));
+        await c.all([
+          c.tween(500, function (p) { meter.setAttribute('width', 240 * (n / 6000) * p); lkT.textContent = 'locks: ' + nf(n * p); }),
+          c.all(cells[b].filter(function (x) { return !x.unc; }).map(function (x) { return c.fadeTo(x.g, 0.08, 500); }))
+        ]);
+        await c.all([
+          c.count(tiles[0].v, purged, purged + n, 450),
+          c.count(tiles[1].v, inSql, inSql - n, 450)
+        ]);
+        purged += n; inSql -= n;
+        await c.tween(250, function (p) { meter.setAttribute('width', 240 * (n / 6000) * (1 - p)); lkT.textContent = 'locks: ' + nf(n * (1 - p)); });
+      }
+      lkT.textContent = 'locks: 0';
+      svc.on(false);
+      c.say('La fila “…” (ejemplo ilustrativo) todavía no está en la tabla de cambios de CDC: la retención la espera en vez de perderla.');
+      var unc = cells[5][3].g;
+      for (var k = 0; k < 2; k++) { await c.fadeTo(unc, 0.3, 300); await c.fadeTo(unc, 1, 300); }
+      await c.wait(700);
+      tiles[2].b.on();
+      c.say('Resultado medido: SQL Server conserva solo la ventana caliente y el lake guarda toda la historia.');
+      await c.fadeIn(eq, 400);
+      await c.wait(1200);
+      tiles[2].b.on(false);
+    }
+  },
+
+  /* ------------------------------------------------------------------ 9 */
+  {
+    title: 'Prueba de caída: cero pérdida',
+    text:
+      '<p>Se apagan Debezium y Spark, y el core sigue operando: <code>/api/simulate</code> generó <strong>3.000 transacciones en 3,9 s</strong>. Mientras tanto, lo pendiente queda guardado en SQL Server (outbox + tabla de cambios de CDC).</p>' +
+      '<p>Al levantarlos, Debezium retoma desde su último LSN, Spark desde su checkpoint, y el pipeline se drena solo. Reconciliación final: <strong>5.728 en SQL Server = 5.728 en bronze = 5.728 en silver</strong>, 0 duplicados.</p>' +
+      '<div class="concept"><b>Concepto</b><strong>Reconciliación por event_id</strong>: en lugar de suponer que no falta nada, se compara evento por evento el origen contra el destino.</div>',
+    codeLabel: 'README §1 · prueba de caída',
+    code:
+      'docker compose stop connect spark-ingest                                # pipeline caído\n' +
+      'curl -X POST "localhost:5080/api/simulate?accounts=20&payments=3000"    # el core sigue operando\n' +
+      'docker compose start connect spark-ingest                               # recuperación automática\n' +
+      'docker compose run --rm e2e                                             # reconciliación: PASS',
+    play: async function (c) {
+      var N = {
+        sql: c.box({ x: 20, y: 40, w: 170, h: 95, k: 'oltp', title: 'SQL Server', sub: ['outbox + CDC'] }),
+        dbz: c.box({ x: 230, y: 40, w: 150, h: 95, k: 'cdc', title: 'Debezium' }),
+        kafka: c.box({ x: 420, y: 40, w: 150, h: 95, k: 'kafka', title: 'Kafka' }),
+        spark: c.box({ x: 610, y: 40, w: 150, h: 95, k: 'spark', title: 'Spark' }),
+        lake: c.box({ x: 800, y: 40, w: 140, h: 95, k: 'iceberg', title: 'Iceberg', sub: ['bronze → silver'] })
+      };
+      var w = [c.wire([[190, 87], [230, 87]]), c.wire([[380, 87], [420, 87]]), c.wire([[570, 87], [610, 87]]), c.wire([[760, 87], [800, 87]])];
+      function xMark(n) {
+        var g = S('g', null, c.root);
+        S('line', { cls: 'cross', x1: n.cx - 22, y1: n.cy - 22, x2: n.cx + 22, y2: n.cy + 22 }, g);
+        S('line', { cls: 'cross', x1: n.cx + 22, y1: n.cy - 22, x2: n.cx - 22, y2: n.cy + 22 }, g);
+        c.hide(g);
+        return g;
+      }
+      var xd = xMark(N.dbz), xs = xMark(N.spark);
+      var term = S('g', null, c.root);
+      S('rect', { cls: 'term-bg', x: 20, y: 155, width: 920, height: 40, rx: 8 }, term);
+      var termT = c.text(36, 181, '', { cls: 'term', size: 14, parent: term });
+
+      var sim = c.box({ x: 20, y: 215, w: 290, h: 145, k: 'oltp', top: true, title: 'POST /api/simulate', tmono: true, ts: 14, sub: ['accounts=20 · payments=3000'], ss: 12.5 });
+      c.text(36, 305, 'transacciones', { size: 13 });
+      var txT = c.text(36, 337, '0', { cls: 'big', size: 26 });
+      c.text(190, 305, 'tiempo', { size: 13 });
+      var tmT = c.text(190, 337, '0,0 s', { cls: 'big', size: 26 });
+
+      var bl = c.box({ x: 330, y: 215, w: 610, h: 145, k: 'ext', cls: 'plain', top: true, align: 'l', title: 'Lo que falta llevar al lake', ts: 14 });
+      void bl;
+      c.text(346, 262, 'pendiente en SQL Server (outbox + tabla de cambios)', { size: 12.5 });
+      S('rect', { cls: 'meter-bg', x: 346, y: 270, width: 578, height: 22, rx: 4 }, c.root);
+      var bar1 = S('rect', { x: 346, y: 270, width: 0, height: 22, rx: 4, fill: 'var(--oltp)' }, c.root);
+      c.text(346, 317, 'lag en Kafka (publicado, todavía sin consumir)', { size: 12.5 });
+      S('rect', { cls: 'meter-bg', x: 346, y: 325, width: 578, height: 22, rx: 4 }, c.root);
+      var bar2 = S('rect', { x: 346, y: 325, width: 0, height: 22, rx: 4, fill: 'var(--kafka)' }, c.root);
+
+      var tl = [['SQL Server', 'oltp'], ['bronze', 'iceberg'], ['silver', 'dbt'], ['duplicados', 'ok']].map(function (d, k) {
+        var b = c.box({ x: 20 + k * 233, y: 382, w: 220, h: 100, k: d[1], top: true, title: d[0], ts: 14 });
+        var v = c.text(130 + k * 233, 458, '—', { cls: 'big', size: 30, anchor: 'middle' });
+        return { b: b, v: v };
+      });
+      var verdict = c.text(480, 520, 'Reconciliación por event_id: PASS · cero pérdida, cero duplicados (medido)', { cls: 't-ok', size: 15, anchor: 'middle' });
+      c.hide(verdict);
+
+      /* 1. stop */
+      c.say('Paso 1: se apaga el pipeline (Debezium y Spark).');
+      await c.typeText(termT, '$ docker compose stop connect spark-ingest', 25);
+      N.dbz.dim(); N.spark.dim();
+      await c.all([c.fadeIn(xd), c.fadeIn(xs)]);
+      await c.wait(700);
+
+      /* 2. simulate */
+      c.say('Paso 2: el core recibe una ráfaga. No se entera de que el pipeline está caído: solo escribe en SQL Server.');
+      await c.typeText(termT, '$ curl -X POST "localhost:5080/api/simulate?accounts=20&payments=3000"', 18);
+      sim.on(); N.sql.on();
+      var rain = [];
+      for (var i = 0; i < 16; i++) {
+        rain.push((function (d) { return c.wait(d * 230).then(function () { return c.fly([[165, 215], [105, 135]], 'oltp', 500); }); })(i));
+      }
+      rain.push(c.count(txT, 0, 3000, 3900));
+      rain.push(c.count(tmT, 0, 3.9, 3900, function (v) { return v.toFixed(1).replace('.', ',') + ' s'; }));
+      rain.push(c.tween(3900, function (p) { bar1.setAttribute('width', 578 * p); }, function (p) { return p; }));
+      await c.all(rain);
+      sim.on(false); N.sql.on(false);
+      c.say('3.000 transacciones en 3,9 s (medido). Los eventos quedan esperando en SQL Server: nada se perdió, solo hay lag.');
+      await c.wait(1500);
+
+      /* 3. restart */
+      c.say('Paso 3: se levanta el pipeline. Debezium retoma desde su último LSN y Spark desde su checkpoint.');
+      await c.typeText(termT, '$ docker compose start connect spark-ingest', 25);
+      N.dbz.dim(false); N.spark.dim(false);
+      await c.all([c.fadeTo(xd, 0, 300), c.fadeTo(xs, 0, 300)]);
+      N.dbz.on(); N.spark.on();
+      var kinds = ['cdc', 'kafka', 'spark', 'iceberg'];
+      var flows = [];
+      for (var j = 0; j < 12; j++) {
+        flows.push((function (d) { return c.wait(d * 260).then(function () { return c.chain(w, kinds, 330); }); })(j));
+      }
+      flows.push(c.tween(4200, function (p) {
+        bar1.setAttribute('width', 578 * Math.max(0, 1 - p * 1.6));
+        var lag = p < 0.45 ? p / 0.45 * 0.6 : Math.max(0, 0.6 * (1 - (p - 0.45) / 0.55));
+        bar2.setAttribute('width', 578 * lag);
+      }, function (p) { return p; }));
+      await c.all(flows);
+      bar1.setAttribute('width', 0); bar2.setAttribute('width', 0);
+      N.dbz.on(false); N.spark.on(false);
+      c.say('El pipeline se drena solo: Spark consume el lag en micro-batches acotados (maxOffsetsPerTrigger).');
+      await c.wait(1100);
+
+      /* 4. reconcile */
+      c.say('Paso 4: reconciliación por event_id entre SQL Server, bronze y silver.');
+      await c.typeText(termT, '$ docker compose run --rm e2e', 25);
+      await c.all([
+        c.count(tl[0].v, 0, 5728, 1200),
+        c.count(tl[1].v, 0, 5728, 1200),
+        c.count(tl[2].v, 0, 5728, 1200)
+      ]);
+      tl[3].v.textContent = '0';
+      tl[3].b.on();
+      await c.fadeIn(verdict, 400);
+      c.say('5.728 = 5.728 = 5.728, 0 duplicados: el pico se convirtió en lag, no en pérdida.');
+      await c.wait(1200);
+      tl[3].b.on(false);
+    }
+  },
+
+  /* ------------------------------------------------------------------ 10 */
+  {
+    title: 'Todo con un comando',
+    text:
+      '<p><code>docker compose up -d --build</code> levanta todos los servicios. El servicio <code>e2e</code> genera tráfico real por la API y reconcilia <strong>por event_id</strong> SQL Server contra bronze hasta que no falte ni sobre nada. Si pasa, corre dbt.</p>' +
+      '<p>Medido desde cero (~1 min 15 s con imágenes en caché): <strong>4.880 en origen = 4.880 en bronze</strong>, 0 faltantes, 0 duplicados, convergió 23 s después del tráfico; dbt <strong>PASS=22</strong>.</p>' +
+      '<div class="concept"><b>Concepto</b><strong>Verificación end-to-end</strong>: la demo no muestra que “corre”; demuestra que cada evento llegó, una sola vez.</div>',
+    codeLabel: 'README §1 · cómo correr la PoC',
+    code:
+      'cp .env.example .env\n' +
+      'docker compose up -d --build          # bloquea hasta que termina la verificación end-to-end\n' +
+      'docker compose logs -f e2e dbt        # evidencia',
+    play: async function (c) {
+      var tb = S('rect', { cls: 'term-bg', x: 20, y: 20, width: 570, height: 330, rx: 10 }, c.root);
+      void tb;
+      var lines = [
+        ['$ cp .env.example .env', 'term'],
+        ['$ docker compose up -d --build', 'term'],
+        ['  (bloquea hasta que termina la verificación end-to-end)', 'term dim'],
+        ['$ docker compose logs -f e2e dbt', 'term'],
+        ['E2E PASS: SQL Server -> Debezium -> Kafka -> Spark -> Iceberg', 'term okt'],
+        ['  source events : 4880', 'term'],
+        ['    (1000 seed + 20 cuentas + 1752 pagos × 2', 'term dim'],
+        ['     + 178 reversos × 2)', 'term dim'],
+        ['  bronze events : 4880 (duplicates: 0)', 'term'],
+        ['  missing       : 0', 'term'],
+        ['  converged in  : 23s after traffic ended', 'term'],
+        ['dbt: freshness PASS — PASS=22 WARN=0 ERROR=0 SKIP=0 TOTAL=22', 'term okt']
+      ];
+      var tEls = lines.map(function (l, i) { return c.text(36, 52 + i * 24, '', { cls: l[1], size: 13.2 }); });
+
+      c.text(610, 34, 'Servicios (docker-compose.yml)', { cls: 't-strong', size: 13.5 });
+      var svcs = [
+        ['sqlserver', 'OLTP de origen', 'oltp'],
+        ['sqlserver-init', 'esquema, outbox, CDC', 'oltp'],
+        ['redpanda', 'buffer con API de Kafka', 'kafka'],
+        ['redpanda-init', 'topic: 3 part. · 7 días', 'kafka'],
+        ['objectstore', 'S3 local (SeaweedFS)', 'ext'],
+        ['objectstore-init', 'crea el bucket', 'ext'],
+        ['iceberg-rest', 'catálogo (= Glue)', 'iceberg'],
+        ['connect', 'Debezium 2.7', 'cdc'],
+        ['connect-register', 'registra el conector', 'cdc'],
+        ['core-api', 'core .NET 8', 'oltp'],
+        ['spark-ingest', 'Kafka → bronze', 'spark'],
+        ['e2e', 'tráfico + reconciliación', 'ok'],
+        ['dbt', 'silver/gold + 22 tests', 'dbt']
+      ].map(function (s, i) {
+        var b = c.box({ x: 610, y: 44 + i * 37, w: 330, h: 31, k: s[2], title: s[0], tmono: true, ts: 13, align: 'l', rx: 6 });
+        c.text(930, 64 + i * 37, s[1], { size: 11.5, anchor: 'end', parent: b.g });
+        b.dim();
+        return b;
+      });
+
+      var tileDefs = [['origen', '4880'], ['bronze', '4880'], ['convergió en', '23 s'], ['faltantes', '0'], ['duplicados', '0'], ['dbt tests', 'PASS=22']];
+      var tiles = tileDefs.map(function (d, i) {
+        var col = i % 3, row = Math.floor(i / 3);
+        var b = c.box({ x: 20 + col * 193, y: 368 + row * 82, w: 183, h: 72, k: i === 5 ? 'dbt' : (i < 2 ? 'iceberg' : 'ok'), top: true, title: d[0], ts: 13 });
+        var v = c.text(111 + col * 193, 425 + row * 82, '', { cls: 'big', size: 24, anchor: 'middle' });
+        c.hide(b.g); c.hide(v);
+        return { b: b, v: v, val: d[1] };
+      });
+
+      c.say('Un solo comando levanta todo el flujo.');
+      await c.typeText(tEls[0], lines[0][0], 25);
+      await c.typeText(tEls[1], lines[1][0], 25);
+      tEls[2].textContent = lines[2][0];
+      c.say('Los servicios arrancan en orden de dependencias (healthchecks), cada uno con su rol.');
+      for (var i = 0; i < 11; i++) {
+        svcs[i].dim(false); svcs[i].on();
+        await c.wait(260);
+        svcs[i].on(false);
+      }
+      svcs[11].dim(false); svcs[11].on();
+      c.say('e2e espera la API y el conector CDC, genera tráfico por POST /api/simulate y reconcilia por event_id contra bronze.');
+      await c.wait(1300);
+      await c.typeText(tEls[3], lines[3][0], 20);
+      for (var k = 4; k < 11; k++) {
+        await c.typeText(tEls[k], lines[k][0], 9);
+      }
+      svcs[11].on(false);
+      for (var t = 0; t < 5; t++) {
+        tiles[t].v.textContent = tiles[t].val === '4880' ? '4.880' : tiles[t].val;
+        c.fadeIn(tiles[t].b.g, 250); c.fadeIn(tiles[t].v, 250);
+        await c.wait(200);
+      }
+      c.say('E2E PASS. Solo entonces corre dbt: freshness y 22 tests.');
+      svcs[12].dim(false); svcs[12].on();
+      await c.wait(900);
+      await c.typeText(tEls[11], lines[11][0], 12);
+      tiles[5].v.textContent = tiles[5].val;
+      c.fadeIn(tiles[5].b.g, 250); await c.fadeIn(tiles[5].v, 250);
+      svcs[12].on(false);
+      c.say('Listo: el flujo completo se levanta y se verifica solo, con un comando.');
+    }
+  }
+  ];
+
+  /* =====================================================================
+     Player UI
+     ===================================================================== */
+  var svg = document.getElementById('stage');
+  var narr = document.getElementById('narr');
+  var dotsEl = document.getElementById('dots');
+  var btnPrev = document.getElementById('btnPrev');
+  var btnNext = document.getElementById('btnNext');
+  var btnPlay = document.getElementById('btnPlay');
+  var btnReplay = document.getElementById('btnReplay');
+  var statusEl = document.getElementById('status');
+  var progress = document.getElementById('progress');
+
+  var state = { idx: 0, auto: false, done: false };
+  var seen = {};
+
+  SCENES.forEach(function (s, i) {
+    var b = document.createElement('button');
+    b.type = 'button';
+    b.textContent = String(i + 1);
+    b.title = (i + 1) + '. ' + s.title;
+    b.setAttribute('aria-label', 'Paso ' + (i + 1) + ': ' + s.title);
+    b.addEventListener('click', function () { show(i); });
+    dotsEl.appendChild(b);
+  });
+
+  function updateUI() {
+    var s = SCENES[state.idx];
+    document.getElementById('kicker').textContent = 'Paso ' + (state.idx + 1) + ' de ' + SCENES.length;
+    document.getElementById('sceneTitle').textContent = s.title;
+    document.getElementById('sceneText').innerHTML = s.text;
+    document.getElementById('codeLabel').textContent = s.codeLabel || '';
+    var pre = document.getElementById('sceneCode');
+    pre.textContent = s.code || '';
+    pre.style.display = s.code ? '' : 'none';
+    Array.prototype.forEach.call(dotsEl.children, function (b, i) {
+      if (i === state.idx) b.setAttribute('aria-current', 'step'); else b.removeAttribute('aria-current');
+      b.classList.toggle('seen', !!seen[i]);
+    });
+    btnPrev.disabled = state.idx === 0;
+    btnNext.disabled = state.idx === SCENES.length - 1;
+    progress.style.width = ((state.idx + 1) / SCENES.length * 100) + '%';
+    updatePlay();
+  }
+
+  function updatePlay() {
+    var playing = state.auto && !rt.paused;
+    btnPlay.textContent = playing ? '❚❚ Pausa' : '▶ Reproducir';
+    btnPlay.setAttribute('aria-pressed', playing ? 'true' : 'false');
+    statusEl.textContent = rt.paused ? 'En pausa' : (state.auto ? 'Reproducción automática' : (state.done ? 'Paso completo' : ''));
+  }
+
+  function show(i) {
+    i = Math.max(0, Math.min(SCENES.length - 1, i));
+    state.idx = i;
+    state.done = false;
+    seen[i] = true;
+    rt.run++;
+    rt.tasks = [];
+    rt.paused = false;
+    var runId = rt.run;
+    while (svg.firstChild) svg.removeChild(svg.firstChild);
+    defs(svg);
+    var root = S('g', null, svg);
+    narr.textContent = '';
+    updateUI();
+    try { history.replaceState(null, '', '#paso-' + (i + 1)); } catch (e) { /* file:// in some browsers */ }
+    var ctx = makeCtx(root, runId, narr);
+    Promise.resolve()
+      .then(function () { return SCENES[i].play(ctx); })
+      .then(function () {
+        if (runId !== rt.run) return;
+        state.done = true;
+        updatePlay();
+        scheduleAdvance(runId);
+      })
+      .catch(function (err) { if (window.console) console.error(err); });
+  }
+
+  function scheduleAdvance(runId) {
+    if (!state.auto || runId !== rt.run || !state.done) return;
+    var until = rt.clock + (REDUCED ? 9000 : 3500);
+    rt.tasks.push(function (t) {
+      if (runId !== rt.run) return true;
+      if (!state.auto) return true;
+      if (t >= until) {
+        if (state.idx < SCENES.length - 1) show(state.idx + 1);
+        else { state.auto = false; updatePlay(); }
+        return true;
+      }
+      return false;
+    });
+  }
+
+  function togglePlay() {
+    if (state.auto && !rt.paused) {
+      rt.paused = true;
+      state.auto = false;
+    } else {
+      rt.paused = false;
+      state.auto = true;
+      if (state.done) {
+        if (state.idx === SCENES.length - 1) { show(0); updatePlay(); return; }
+        scheduleAdvance(rt.run);
+      }
+    }
+    updatePlay();
+  }
+
+  btnPrev.addEventListener('click', function () { show(state.idx - 1); });
+  btnNext.addEventListener('click', function () { show(state.idx + 1); });
+  btnReplay.addEventListener('click', function () { show(state.idx); });
+  btnPlay.addEventListener('click', togglePlay);
+
+  document.addEventListener('keydown', function (e) {
+    if (e.altKey || e.ctrlKey || e.metaKey) return;
+    var onButton = e.target && e.target.tagName === 'BUTTON';
+    switch (e.key) {
+      case 'ArrowRight': case 'PageDown': e.preventDefault(); show(state.idx + 1); break;
+      case 'ArrowLeft': case 'PageUp': e.preventDefault(); show(state.idx - 1); break;
+      case 'Home': e.preventDefault(); show(0); break;
+      case 'End': e.preventDefault(); show(SCENES.length - 1); break;
+      case ' ': case 'Spacebar':
+        if (onButton) return;
+        e.preventDefault(); togglePlay(); break;
+      case 'r': case 'R': show(state.idx); break;
+      default: break;
+    }
+  });
+
+  if (reduceMQ) {
+    var onChange = function () { REDUCED = reduceMQ.matches; show(state.idx); };
+    if (reduceMQ.addEventListener) reduceMQ.addEventListener('change', onChange);
+    else if (reduceMQ.addListener) reduceMQ.addListener(onChange);
+  }
+
+  var m = /paso-(\d+)/.exec(location.hash || '');
+  show(m ? parseInt(m[1], 10) - 1 : 0);
+})();
+</script>
+</body>
+</html>

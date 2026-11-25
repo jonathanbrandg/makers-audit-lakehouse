@@ -1,0 +1,46 @@
+version: 2
+
+models:
+  - name: stg_audit__events
+    description: Typed and normalized bronze events; payload parsed per schema_version.
+    columns:
+      - name: event_id
+        tests: [not_null]
+
+  - name: audit_events
+    description: >
+      Silver audit trail (Iceberg, partitioned by days(event_ts)). One row per
+      outbox event; idempotent MERGE on event_id.
+    columns:
+      - name: event_id
+        description: Outbox EventId, idempotency key end to end.
+        tests: [not_null, unique]
+      - name: event_ts
+        tests: [not_null]
+      - name: entity_type
+        tests:
+          - accepted_values:
+              values: ['ACCOUNT', 'PAYMENT', 'CUSTOMER']
+      - name: action
+        tests:
+          - accepted_values:
+              values: ['CREATE', 'UPDATE', 'DELETE']
+      - name: actor
+        tests: [not_null]
+      - name: amount
+        tests: [non_negative]
+
+  - name: fct_audit_daily_activity
+    description: Daily events per entity type and action.
+    tests:
+      - unique_combination:
+          combination_of_columns: ['activity_date', 'entity_type', 'action']
+    columns:
+      - name: events
+        tests: [not_null, non_negative]
+
+  - name: fct_actor_daily_activity
+    description: Daily activity per actor.
+    tests:
+      - unique_combination:
+          combination_of_columns: ['activity_date', 'actor']

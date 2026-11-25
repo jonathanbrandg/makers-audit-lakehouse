@@ -1,0 +1,4 @@
+# Finales de linea LF en todo el repo: los archivos se ejecutan en contenedores Linux
+* text=auto eol=lf
+*.sh  text eol=lf
+*.sql text eol=lf

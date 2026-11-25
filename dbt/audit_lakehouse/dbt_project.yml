@@ -1,0 +1,29 @@
+name: audit_lakehouse
+version: "1.0.0"
+config-version: 2
+profile: audit_lakehouse
+
+model-paths: ["models"]
+test-paths: ["tests"]
+macro-paths: ["macros"]
+target-path: "target"
+clean-targets: ["target", "dbt_packages"]
+
+vars:
+  # Re-read window over bronze on each incremental run. The merge on event_id
+  # makes the overlap harmless; it absorbs late commits of the streaming job.
+  silver_lookback_minutes: 60
+
+models:
+  audit_lakehouse:
+    +file_format: iceberg
+    +tblproperties:
+      format-version: "2"
+      write.target-file-size-bytes: "134217728"
+    staging:
+      +materialized: view
+      +schema: audit_staging
+    silver:
+      +schema: audit_silver
+    gold:
+      +schema: audit_gold

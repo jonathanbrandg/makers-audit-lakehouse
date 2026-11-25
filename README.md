@@ -243,11 +243,11 @@ docker compose down -v                                # Limpiar contenedores y v
 
 ### Eje A: Desacoplamiento en .NET 8 y SQL Server (sin bloqueos ni pérdida)
 
-En lugar de elegir una sola técnica aislada, combinamos **Transactional Outbox + CDC + Buffer durable**, aprovechando lo mejor de cada una:
+En lugar de elegir una sola técnica aislada, combiné **Transactional Outbox + CDC + Buffer durable**, aprovechando lo mejor de cada una:
 
 * **Atomicidad sin *dual-write*:** Mediante un `SaveChangesInterceptor` de EF Core (`AuditOutboxInterceptor.cs`), cada cambio en entidades auditables genera una fila en `dbo.AuditOutbox` dentro de la **misma transacción** de negocio. Si el pago hace rollback, el log tampoco nace. El core nunca habla directo con Kafka; en pruebas con el pipeline apagado procesó 3.000 transacciones en 3,9 s (5.728 eventos) sin enterarse de la caída.
 * **Diseño físico pensado para no fragmentar:** La tabla `AuditOutbox` es angosta, *append-only* y usa GUIDs secuenciales (generados por EF Core en el cliente, con `NEWSEQUENTIALID()` como default en la tabla) para insertar siempre al final del índice, evitando *page splits* y contención. Además, el interceptor soporta `[AuditIgnore]` para excluir campos técnicos o datos sensibles (PII).
-* **CDC solo sobre la Outbox:** Habilitamos CDC únicamente en `dbo.AuditOutbox` y no sobre `Accounts` o `Payments`. Esto desacopla el modelo interno del dominio frente al contrato analítico (`SchemaVersion`) y conserva contexto de negocio: actor, canal y los cambios `old/new` de cada propiedad (por ejemplo, el estado del pago `COMPLETED → REVERSED`).
+* **CDC solo sobre la Outbox:** Habilité CDC únicamente en `dbo.AuditOutbox` y no sobre `Accounts` o `Payments`. Esto desacopla el modelo interno del dominio frente al contrato analítico (`SchemaVersion`) y conserva contexto de negocio: actor, canal y los cambios `old/new` de cada propiedad (por ejemplo, el estado del pago `COMPLETED → REVERSED`).
 * **Retención controlada en OLTP:** Un servicio en segundo plano (`OutboxRetentionService`) purga registros antiguos en **lotes de 4.000 filas** (por debajo del umbral de ~5.000 locks donde SQL Server escala a bloqueo de tabla) y **solo si CDC ya los capturó** (`EXISTS` en `cdc.dbo_AuditOutbox_CT`). En pruebas purgó 21.000 filas dejando SQL Server en 5.733 mientras el Lakehouse conservó los 26.733 completos.
 
 ### Eje B: Diseño del Data Lakehouse (Iceberg + dbt + Glue)
@@ -259,29 +259,29 @@ En lugar de elegir una sola técnica aislada, combinamos **Transactional Outbox 
 * **Gold (`fct_audit_daily_activity`, `fct_actor_daily_activity`):** Agregaciones diarias listas para reportes y auditoría.
 
 #### 2. Particionamiento y ordenamiento
-* Usamos **Hidden Partitioning** por día de negocio: `PARTITIONED BY (days(event_ts))`. Las consultas filtran por `event_ts` de forma natural sin depender de columnas artificiales (`dt`), y particionar por día (en vez de hora) evita multiplicar metadatos y archivos pequeños. Si el volumen crece a futuro, Iceberg permite evolucionar la partición sin reescribir el histórico.
-* Al escribir, ordenamos localmente por `entity_id, event_ts` (`WRITE DISTRIBUTED BY PARTITION LOCALLY ORDERED BY...`). Esto reduce la cantidad de escritores concurrentes y alinea las estadísticas min/max de Parquet para acelerar la consulta más común: *"muéstrame el historial de esta entidad"*.
+* Usé **Hidden Partitioning** por día de negocio: `PARTITIONED BY (days(event_ts))`. Las consultas filtran por `event_ts` de forma natural sin depender de columnas artificiales (`dt`), y particionar por día (en vez de hora) evita multiplicar metadatos y archivos pequeños. Si el volumen crece a futuro, Iceberg permite evolucionar la partición sin reescribir el histórico.
+* Al escribir, ordeno localmente por `entity_id, event_ts` (`WRITE DISTRIBUTED BY PARTITION LOCALLY ORDERED BY...`). Esto reduce la cantidad de escritores concurrentes y alinea las estadísticas min/max de Parquet para acelerar la consulta más común: *"muéstrame el historial de esta entidad"*.
 
 #### 3. Solución al *Small Files Problem* y ciclo de vida
 Los micro-batches de 30 segundos generan archivos pequeños. El job `maintenance.py` resuelve esto operativamente:
 1. **`rewrite_data_files` (sort, objetivo 128 MB):** En producción compacta solo particiones cerradas (`< hoy`) para no colisionar con el streaming activo.
 2. **`rewrite_manifests`:** Mantiene ágil la planificación de consultas.
 3. **`expire_snapshots` y `remove_orphan_files`:** Acota el *time travel* (24 h / mínimo 10 snapshots) y limpia archivos huérfanos con margen de seguridad de 3 días.
-4. **Retención regulatoria:** Se ejecuta mediante `DELETE` alineado a días completos en Iceberg (descartando particiones en metadata sin reescribir datos). *Importante:* Nunca aplicamos políticas de expiración de S3 directamente sobre el bucket, ya que borrarían archivos referenciados por Iceberg y corromperían la tabla.
+4. **Retención regulatoria:** Se ejecuta mediante `DELETE` alineado a días completos en Iceberg (descartando particiones en metadata sin reescribir datos). *Importante:* Nunca aplico políticas de expiración de S3 directamente sobre el bucket, ya que borrarían archivos referenciados por Iceberg y corromperían la tabla.
 
 #### 4. ACID y evolución de esquemas
-* **Inmutabilidad y *Merge-on-Read*:** Como la auditoría es *append-only*, ignoramos eventos `d` (deletes) provenientes de la purga del Outbox en SQL Server. Además, configuramos *merge-on-read* junto con un anti-join previo en dbt para evitar amplificación de escritura: en nuestras mediciones pasamos de reescribir 19.500 filas por corrida incremental (*copy-on-write*) a escribir solo **1 archivo nuevo con 1.500 filas y 0 archivos reescritos**.
+* **Inmutabilidad y *Merge-on-Read*:** Como la auditoría es *append-only*, ignoro los eventos `d` (deletes) provenientes de la purga del Outbox en SQL Server. Además, configuré *merge-on-read* junto con un anti-join previo en dbt para evitar amplificación de escritura: en mis mediciones pasé de reescribir 19.500 filas por corrida incremental (*copy-on-write*) a escribir solo **1 archivo nuevo con 1.500 filas y 0 archivos reescritos**.
 * **Evolución en 3 niveles:** Nuevos campos de negocio viajan dentro del JSON versionado (`SchemaVersion`); nuevas columnas en Silver usan `on_schema_change='append_new_columns'`; y cambios en Bronze se gestionan mediante `ALTER TABLE` explícito en metadata sin reescribir histórico.
 
 #### 5. Portabilidad hacia AWS Glue
-En local usamos **Iceberg REST** porque Glue no tiene un contenedor oficial fiel, pero el código de Spark y dbt es idéntico. Pasar a AWS solo requiere cambiar el tipo de catálogo en `spark-defaults.conf`:
+En local usé **Iceberg REST** porque Glue no tiene un contenedor oficial fiel, pero el código de Spark y dbt es idéntico. Pasar a AWS solo requiere cambiar el tipo de catálogo en `spark-defaults.conf`:
 
 ```properties
 spark.sql.catalog.lake.type       glue
 spark.sql.catalog.lake.warehouse  s3://<bucket-lakehouse>/
 ```
 
-Con esto ganamos un catálogo unificado para Athena, EMR, Redshift y Glue Jobs, gobierno fino por columna/fila con **Lake Formation** (por ejemplo, enmascarando `payload_raw` a analistas) y optimización gestionada de tablas Iceberg.
+Con esto se gana un catálogo unificado para Athena, EMR, Redshift y Glue Jobs, gobierno fino por columna/fila con **Lake Formation** (por ejemplo, enmascarando `payload_raw` a analistas) y optimización gestionada de tablas Iceberg.
 
 ---
 
@@ -333,9 +333,9 @@ Cada etapa persiste el evento antes de liberar al eslabón anterior:
 * *Caída mayor a la retención del broker:* `failOnDataLoss=true` detiene la ingesta con alerta explícita en lugar de omitir datos, permitiendo reconstruir desde un snapshot de Debezium sobre SQL Server. *(En producción, además, la purga del Outbox debe guiarse por una marca de agua confirmada en Iceberg y no solo por la captura de CDC).*
 
 ### 4. Menciona una alucinación o sugerencia ineficiente de la IA y cómo tu criterio sénior la corrigió
-El caso más claro ocurrió en el modelo incremental de **dbt**. La IA generó una estrategia `merge` estándar que pasaba todos los tests funcionales, pero al auditar los archivos generados en Iceberg descubrimos que ejecutaba un *copy-on-write* que **reescribía la partición completa del día (19.500 filas) cada vez que insertaba 2.500 eventos nuevos**.
+El caso más claro ocurrió en el modelo incremental de **dbt**. La IA generó una estrategia `merge` estándar que pasaba todos los tests funcionales, pero al auditar los archivos generados en Iceberg descubrí que ejecutaba un *copy-on-write* que **reescribía la partición completa del día (19.500 filas) cada vez que insertaba 2.500 eventos nuevos**.
 
-Para evitar esa amplificación de escritura en una tabla *append-only*, combinamos un **anti-join previo** contra una ventana de *lookback* con el modo **merge-on-read**, logrando que cada corrida escriba únicamente un archivo nuevo con los registros recientes sin tocar los existentes. Esto confirma que en ingeniería de datos validar los tests no basta: hay que inspeccionar el comportamiento físico del almacenamiento.
+Para evitar esa amplificación de escritura en una tabla *append-only*, combiné un **anti-join previo** contra una ventana de *lookback* con el modo **merge-on-read**, logrando que cada corrida escriba únicamente un archivo nuevo con los registros recientes sin tocar los existentes. Esto confirma que en ingeniería de datos validar los tests no basta: hay que inspeccionar el comportamiento físico del almacenamiento.
 
 ---
 
